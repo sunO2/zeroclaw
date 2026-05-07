@@ -1,5 +1,6 @@
 //! ZeroClaw Desktop — Tauri application library.
 
+pub mod capabilities;
 pub mod commands;
 pub mod gateway_client;
 pub mod health;
@@ -110,6 +111,8 @@ pub fn run() {
             commands::onboarding::get_onboarding_state,
             commands::onboarding::complete_onboarding,
             commands::onboarding::reset_onboarding,
+            capabilities::screenshot::take_screenshot,
+            capabilities::applescript::run_applescript,
         ])
         .setup(move |app| {
             // Set macOS dock icon (needed for dev builds without .app bundle).
