@@ -249,6 +249,19 @@ async fn prompt_field(
     name: &str,
     default: Option<&str>,
 ) -> Result<Nav> {
+    // Field populated by a `ZEROCLAW_*` env override at load time — show the
+    // env-var name and the TOML path, then skip the prompt. The note clears
+    // when navigation moves to next/previous step.
+    if cfg.prop_is_env_overridden(name) {
+        let env_var = format!("ZEROCLAW_{}", name.replace('.', "__").replace('-', "_"),);
+        ui.note(&format!(
+            "\u{1f489} {name}\n\
+             overridden by env: {env_var}\n\
+             config.toml path: [{name}] — skipping prompt, value sourced from environment.",
+        ));
+        return Ok(Nav::Done);
+    }
+
     let field = cfg
         .prop_fields()
         .into_iter()
@@ -2582,9 +2595,11 @@ mod tests {
     fn create_map_key_accepts_valid_alias() {
         let temp = TempDir::new().unwrap();
         let mut cfg = test_cfg(&temp);
-        let result = cfg.create_map_key("channels.discord", "prod-alerts");
+        // V0.8.0: aliases must be lowercase ASCII alphanumeric only — see
+        // `validate_alias_key`.
+        let result = cfg.create_map_key("channels.discord", "prodalerts");
         assert!(result.is_ok(), "valid alias must be accepted");
-        assert!(cfg.channels.discord.contains_key("prod-alerts"));
+        assert!(cfg.channels.discord.contains_key("prodalerts"));
     }
 
     #[test]

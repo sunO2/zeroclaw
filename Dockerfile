@@ -138,16 +138,16 @@ RUN chown 65534:65534 /zeroclaw-data/.zeroclaw/config.toml
 # Environment setup
 # Ensure UTF-8 locale so CJK / multibyte input is handled correctly
 ENV LANG=C.UTF-8
-# Use consistent workspace path
+# Bootstrap (uppercase tail) — pre-load: decides where the config file lives.
 ENV ZEROCLAW_WORKSPACE=/zeroclaw-data/workspace
 ENV HOME=/zeroclaw-data
-# Provider/model selection lives in the config file (defaults to
-# `~/.zeroclaw/config.toml`; custom workspaces override the path) under
-# `[providers.models.<type>.<alias>]`. The V1/V2 `PROVIDER` and
-# `ZEROCLAW_MODEL` env-var overrides were removed in V3.
-ENV ZEROCLAW_GATEWAY_PORT=42617
-
-# Note: credentials live in the config file, not in env.
+# V0.8.0 env-var grammar: `ZEROCLAW_<dotted_path_with_double_underscores>=<value>`
+# mirrors the TOML config 1:1; `__` is the path separator. Operators inject
+# credentials and runtime knobs at `docker run -e ...` (or via docker-compose
+# `environment:`). Legacy `PROVIDER`, `ZEROCLAW_MODEL`, `ANTHROPIC_API_KEY`,
+# `API_KEY`, etc. fallbacks were eradicated. Example:
+#   docker run -e ZEROCLAW_providers__models__anthropic__default__api_key=sk-ant-... ...
+ENV ZEROCLAW_gateway__port=42617
 
 WORKDIR /zeroclaw-data
 USER 65534:65534

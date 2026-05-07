@@ -12,7 +12,7 @@
 //!    the **Pub/Sub Publisher** role on that topic.
 //! 2. Create a push subscription pointing to `https://<your-domain>/webhook/gmail`.
 //! 3. Configure `[channels_config.gmail_push]` in `config.toml` with `topic` and
-//!    `oauth_token` (or set `GMAIL_PUSH_OAUTH_TOKEN` env var).
+//!    `oauth_token`.
 //!
 //! The channel automatically calls `users.watch` to register the subscription
 //! and renews it before the 7-day expiry.
@@ -191,25 +191,9 @@ impl GmailPushChannel {
         }
     }
 
-    /// Resolve the webhook secret from config or environment.
-    pub fn resolve_webhook_secret(&self) -> String {
-        if !self.config.webhook_secret.is_empty() {
-            return self.config.webhook_secret.clone();
-        }
-        std::env::var("GMAIL_PUSH_WEBHOOK_SECRET").unwrap_or_default()
-    }
-
-    /// Resolve the OAuth token from config or environment.
-    pub fn resolve_oauth_token(&self) -> String {
-        if !self.config.oauth_token.is_empty() {
-            return self.config.oauth_token.clone();
-        }
-        std::env::var("GMAIL_PUSH_OAUTH_TOKEN").unwrap_or_default()
-    }
-
     /// Register a Gmail watch subscription via `POST /gmail/v1/users/me/watch`.
     pub async fn register_watch(&self) -> Result<WatchResponse> {
-        let token = self.resolve_oauth_token();
+        let token = self.config.oauth_token.clone();
         if token.is_empty() {
             return Err(anyhow!("Gmail OAuth token is not configured"));
         }
@@ -263,7 +247,7 @@ impl GmailPushChannel {
         start_history_id: u64,
         last_id: &mut u64,
     ) -> Result<Vec<String>> {
-        let token = self.resolve_oauth_token();
+        let token = self.config.oauth_token.clone();
         if token.is_empty() {
             return Err(anyhow!("Gmail OAuth token is not configured"));
         }
@@ -314,7 +298,7 @@ impl GmailPushChannel {
 
     /// Fetch a full message by ID from the Gmail API.
     pub async fn fetch_message(&self, message_id: &str) -> Result<GmailMessage> {
-        let token = self.resolve_oauth_token();
+        let token = self.config.oauth_token.clone();
         let url = format!(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}?format=full",
             message_id
@@ -462,7 +446,7 @@ impl Channel for GmailPushChannel {
 
     async fn send(&self, message: &SendMessage) -> Result<()> {
         // Send via Gmail API (drafts.send or messages.send)
-        let token = self.resolve_oauth_token();
+        let token = self.config.oauth_token.clone();
         if token.is_empty() {
             return Err(anyhow!("Gmail OAuth token is not configured for sending"));
         }
@@ -531,7 +515,7 @@ impl Channel for GmailPushChannel {
     }
 
     async fn health_check(&self) -> bool {
-        let token = self.resolve_oauth_token();
+        let token = self.config.oauth_token.clone();
         if token.is_empty() {
             return false;
         }

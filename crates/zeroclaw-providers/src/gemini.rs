@@ -658,20 +658,15 @@ impl GeminiModelProvider {
             .as_deref()
             .and_then(extract_client_id_from_id_token);
 
-        let client_id = Self::load_non_empty_env("GEMINI_OAUTH_CLIENT_ID")
-            .or_else(|| {
-                creds
-                    .client_id
-                    .as_deref()
-                    .and_then(Self::normalize_non_empty)
-            })
+        let client_id = creds
+            .client_id
+            .as_deref()
+            .and_then(Self::normalize_non_empty)
             .or(id_token_client_id);
-        let client_secret = Self::load_non_empty_env("GEMINI_OAUTH_CLIENT_SECRET").or_else(|| {
-            creds
-                .client_secret
-                .as_deref()
-                .and_then(Self::normalize_non_empty)
-        });
+        let client_secret = creds
+            .client_secret
+            .as_deref()
+            .and_then(Self::normalize_non_empty);
 
         Some(OAuthTokenState {
             access_token,

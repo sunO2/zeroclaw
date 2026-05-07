@@ -2379,6 +2379,8 @@ async fn main() -> Result<()> {
             }
             ConfigCommands::List { filter, secrets } => {
                 let entries = config.prop_fields();
+                println!("Legend: \u{1f489} env-overridden  \u{1f512} secret");
+                println!();
                 let mut current_category = "";
                 for entry in &entries {
                     if secrets && !entry.is_secret {
@@ -2396,9 +2398,14 @@ async fn main() -> Result<()> {
                         println!("{}:", entry.category);
                         current_category = entry.category;
                     }
+                    let env = if config.prop_is_env_overridden(&entry.name) {
+                        "\u{1f489} "
+                    } else {
+                        "  "
+                    };
                     let lock = if entry.is_secret { " \u{1f512}" } else { "" };
                     println!(
-                        "  {:<45} = {:<20} ({}){lock}",
+                        "{env}{:<45} = {:<20} ({}){lock}",
                         entry.name, entry.display_value, entry.type_hint
                     );
                 }

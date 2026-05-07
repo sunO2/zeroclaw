@@ -81,6 +81,13 @@ pub struct Config {
     /// Path to config.toml - computed from home, not serialized
     #[serde(skip)]
     pub config_path: PathBuf,
+    /// Dotted prop-paths overridden by `ZEROCLAW_*` env vars at load time.
+    /// Populated by `apply_env_overrides`; consulted by `save()` to mask the
+    /// env-injected values back to disk-or-default before encryption, and by
+    /// `prop_is_env_overridden` for O(1) display-layer lookup (config list,
+    /// dashboard, onboarding).
+    #[serde(skip)]
+    pub env_overridden_paths: std::collections::HashSet<String>,
     /// Config file schema version.
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
@@ -766,24 +773,20 @@ pub struct AzureModelProviderConfig {
     #[serde(flatten)]
     pub base: ModelProviderConfig,
     /// Azure resource name (the `<resource>` part of `<resource>.openai.azure.com`).
-    /// Accepts the legacy `azure_openai_resource` key on deserialize for
-    /// disk-key compatibility.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         alias = "azure_openai_resource"
     )]
     pub resource: Option<String>,
-    /// Azure deployment name — the deployment created in Azure AI Studio that
-    /// wraps a specific model.
+    /// Azure deployment name — the deployment created in Azure AI Studio.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         alias = "azure_openai_deployment"
     )]
     pub deployment: Option<String>,
-    /// Azure API version string (e.g. `2024-10-21`). Must match a version the
-    /// resource supports.
+    /// Azure API version string (e.g. `2024-10-21`).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -2153,6 +2156,9 @@ pub struct GeminiCliModelProviderConfig {
     #[nested]
     #[serde(flatten)]
     pub base: ModelProviderConfig,
+    /// Path to the `gemini` CLI binary. Falls back to `gemini` (PATH lookup).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
 }
 
 // ── LMStudio (local default) ──
@@ -2403,6 +2409,9 @@ pub struct KiloCliModelProviderConfig {
     #[nested]
     #[serde(flatten)]
     pub base: ModelProviderConfig,
+    /// Path to the `kilo` CLI binary. Falls back to `kilo` (PATH lookup).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
 }
 
 // ── Custom (user-supplied URL, no canonical default) ──
@@ -4585,10 +4594,36 @@ pub struct GatewayConfig {
     #[serde(default)]
     #[nested]
     pub tls: Option<GatewayTlsConfig>,
+
+    /// HTTP request timeout (seconds) for gateway routes other than the
+    /// long-running cron-trigger endpoint. Default: 30s.
+    ///
+    /// V0.8.0: replaces the legacy `ZEROCLAW_GATEWAY_TIMEOUT_SECS` env-var
+    /// override. Operators set this via the schema-mirror grammar:
+    /// `ZEROCLAW_gateway_request_timeout_secs=120`.
+    #[serde(default = "default_gateway_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+
+    /// HTTP request timeout (seconds) for `POST /api/cron/{id}/run`, which
+    /// runs jobs synchronously and routinely exceeds the 30s default.
+    /// Default: 600s (10 minutes).
+    ///
+    /// V0.8.0: replaces the legacy `ZEROCLAW_GATEWAY_LONG_RUNNING_REQUEST_TIMEOUT_SECS`
+    /// env-var override.
+    #[serde(default = "default_gateway_long_running_request_timeout_secs")]
+    pub long_running_request_timeout_secs: u64,
 }
 
 fn default_gateway_port() -> u16 {
     42617
+}
+
+fn default_gateway_request_timeout_secs() -> u64 {
+    30
+}
+
+fn default_gateway_long_running_request_timeout_secs() -> u64 {
+    600
 }
 
 fn default_gateway_host() -> String {
@@ -4643,6 +4678,8 @@ impl Default for GatewayConfig {
             pairing_dashboard: PairingDashboardConfig::default(),
             web_dist_dir: None,
             tls: None,
+            request_timeout_secs: default_gateway_request_timeout_secs(),
+            long_running_request_timeout_secs: default_gateway_long_running_request_timeout_secs(),
         }
     }
 }
@@ -12012,6 +12049,7 @@ impl Default for Config {
         Self {
             workspace_dir: zeroclaw_dir.join("workspace"),
             config_path: zeroclaw_dir.join("config.toml"),
+            env_overridden_paths: std::collections::HashSet::new(),
             schema_version: crate::migration::CURRENT_SCHEMA_VERSION,
             providers: crate::providers::ProvidersConfig::default(),
             observability: ObservabilityConfig::default(),
@@ -12428,48 +12466,9 @@ fn is_local_ollama_endpoint(api_url: Option<&str>) -> bool {
 }
 
 fn has_ollama_cloud_credential(config_api_key: Option<&str>) -> bool {
-    let config_key_present = config_api_key
+    config_api_key
         .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
-    if config_key_present {
-        return true;
-    }
-
-    ["OLLAMA_API_KEY", "ZEROCLAW_API_KEY", "API_KEY"]
-        .iter()
-        .any(|name| {
-            std::env::var(name)
-                .ok()
-                .is_some_and(|value| !value.trim().is_empty())
-        })
-}
-
-/// Parse the `ZEROCLAW_EXTRA_HEADERS` environment variable value.
-///
-/// Format: `Key:Value,Key2:Value2`
-///
-/// Entries without a colon or with an empty key are silently skipped.
-/// Leading/trailing whitespace on both key and value is trimmed.
-pub fn parse_extra_headers_env(raw: &str) -> Vec<(String, String)> {
-    let mut result = Vec::new();
-    for entry in raw.split(',') {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        if let Some((key, value)) = entry.split_once(':') {
-            let key = key.trim();
-            let value = value.trim();
-            if key.is_empty() {
-                tracing::warn!("Ignoring extra header with empty name in ZEROCLAW_EXTRA_HEADERS");
-                continue;
-            }
-            result.push((key.to_string(), value.to_string()));
-        } else {
-            tracing::warn!("Ignoring malformed extra header entry (missing ':'): {entry}");
-        }
-    }
-    result
+        .is_some_and(|value| !value.is_empty())
 }
 
 fn normalize_wire_api(raw: &str) -> Option<&'static str> {
@@ -12591,6 +12590,13 @@ impl Config {
             .collect()
     }
 
+    /// Returns `true` if `path` was populated by a `ZEROCLAW_*` env-var
+    /// override at load time. O(1) HashSet lookup; safe to call per row in
+    /// list-rendering paths (`config list`, dashboard, onboarding).
+    pub fn prop_is_env_overridden(&self, path: &str) -> bool {
+        self.env_overridden_paths.contains(path)
+    }
+
     pub async fn load_or_init() -> Result<Self> {
         let (default_zeroclaw_dir, default_workspace_dir) = default_config_and_workspace_dirs()?;
 
@@ -12701,6 +12707,11 @@ impl Config {
             // Decrypt all #[secret]-annotated fields via Configurable derive
             config.decrypt_secrets(&store)?;
 
+            // Apply ZEROCLAW_<lowercase_path> env-var overrides. Hard-errors
+            // on any unresolvable path — no silent ignores. Tracks overridden
+            // paths so save() can mask them back to disk-or-default.
+            config.env_overridden_paths = crate::env_overrides::apply_env_overrides(&mut config)?;
+
             config.validate()?;
             tracing::info!(
                 path = %config.config_path.display(),
@@ -12711,11 +12722,14 @@ impl Config {
             );
             Ok(config)
         } else {
-            let config = Config {
+            let mut config = Config {
                 config_path: config_path.clone(),
                 workspace_dir,
                 ..Config::default()
             };
+            // Save defaults FIRST so env-injected values never reach the
+            // freshly-created config file. Env overrides apply post-save to
+            // populate the in-memory Config for the running process.
             config.save().await?;
 
             // Restrict permissions on newly created config file (may contain API keys)
@@ -12724,6 +12738,8 @@ impl Config {
                 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
                 let _ = fs::set_permissions(&config_path, Permissions::from_mode(0o600)).await;
             }
+
+            config.env_overridden_paths = crate::env_overrides::apply_env_overrides(&mut config)?;
 
             config.validate()?;
             tracing::info!(
@@ -13108,7 +13124,7 @@ impl Config {
             }
             if !has_ollama_cloud_credential(entry.api_key.as_deref()) {
                 anyhow::bail!(
-                    "default_model uses ':cloud' with model_provider 'ollama', but no API key is configured. Set api_key or OLLAMA_API_KEY."
+                    "default_model uses ':cloud' with model_provider 'ollama', but no API key is configured. Set api_key on [providers.models.ollama.<alias>] (or via the schema-mirror grammar: ZEROCLAW_providers_models_ollama_<alias>_api_key=<value>)."
                 );
             }
         }
@@ -13711,6 +13727,24 @@ impl Config {
             .parent()
             .context("Config path must have a parent directory")?;
         let store = crate::secrets::SecretStore::new(zeroclaw_dir, self.secrets.encrypt);
+
+        // Mask env-injected values back to disk-or-default before encryption,
+        // so values supplied via `ZEROCLAW_*` env vars never reach disk.
+        if !self.env_overridden_paths.is_empty() {
+            let disk_config: Option<Config> = if config_path.exists()
+                && let Ok(contents) = fs::read_to_string(&config_path).await
+                && let Ok(parsed) = crate::migration::migrate_to_current(&contents)
+            {
+                Some(parsed)
+            } else {
+                None
+            };
+            crate::env_overrides::mask_env_overrides_for_save(
+                &mut config_to_save,
+                disk_config.as_ref(),
+                &self.env_overridden_paths,
+            )?;
+        }
 
         // Encrypt all #[secret]-annotated fields via Configurable derive
         config_to_save.encrypt_secrets(&store)?;
@@ -14690,6 +14724,7 @@ auto_save = true
             sop: SopConfig::default(),
             shell_tool: ShellToolConfig::default(),
             escalation: EscalationConfig::default(),
+            env_overridden_paths: std::collections::HashSet::new(),
         };
         // ModelProvider fields are now resolved directly — no cache needed.
 
@@ -14909,73 +14944,6 @@ provider_timeout_secs = 300
                 .unwrap_or(120),
             300
         );
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_basic() {
-        let headers = parse_extra_headers_env("User-Agent:MyApp/1.0,X-Title:zeroclaw");
-        assert_eq!(headers.len(), 2);
-        assert_eq!(
-            headers[0],
-            ("User-Agent".to_string(), "MyApp/1.0".to_string())
-        );
-        assert_eq!(headers[1], ("X-Title".to_string(), "zeroclaw".to_string()));
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_with_url_value() {
-        let headers =
-            parse_extra_headers_env("HTTP-Referer:https://github.com/zeroclaw-labs/zeroclaw");
-        assert_eq!(headers.len(), 1);
-        // Only splits on first colon, preserving URL colons in value
-        assert_eq!(headers[0].0, "HTTP-Referer");
-        assert_eq!(headers[0].1, "https://github.com/zeroclaw-labs/zeroclaw");
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_empty_string() {
-        let headers = parse_extra_headers_env("");
-        assert!(headers.is_empty());
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_whitespace_trimming() {
-        let headers = parse_extra_headers_env("  X-Title : zeroclaw , User-Agent : cli/1.0 ");
-        assert_eq!(headers.len(), 2);
-        assert_eq!(headers[0], ("X-Title".to_string(), "zeroclaw".to_string()));
-        assert_eq!(
-            headers[1],
-            ("User-Agent".to_string(), "cli/1.0".to_string())
-        );
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_skips_malformed() {
-        let headers = parse_extra_headers_env("X-Valid:value,no-colon-here,Another:ok");
-        assert_eq!(headers.len(), 2);
-        assert_eq!(headers[0], ("X-Valid".to_string(), "value".to_string()));
-        assert_eq!(headers[1], ("Another".to_string(), "ok".to_string()));
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_skips_empty_key() {
-        let headers = parse_extra_headers_env(":value,X-Valid:ok");
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0], ("X-Valid".to_string(), "ok".to_string()));
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_allows_empty_value() {
-        let headers = parse_extra_headers_env("X-Empty:");
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0], ("X-Empty".to_string(), String::new()));
-    }
-
-    #[test]
-    async fn parse_extra_headers_env_trailing_comma() {
-        let headers = parse_extra_headers_env("X-Title:zeroclaw,");
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0], ("X-Title".to_string(), "zeroclaw".to_string()));
     }
 
     #[test]
@@ -15263,6 +15231,7 @@ default_temperature = 0.7
             sop: SopConfig::default(),
             shell_tool: ShellToolConfig::default(),
             escalation: EscalationConfig::default(),
+            env_overridden_paths: std::collections::HashSet::new(),
         };
 
         // ModelProvider fields are now resolved directly — no cache needed.
@@ -16332,6 +16301,8 @@ bot_token = "xoxb-tok"
             pairing_dashboard: PairingDashboardConfig::default(),
             web_dist_dir: None,
             tls: None,
+            request_timeout_secs: 30,
+            long_running_request_timeout_secs: 600,
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();
@@ -16826,7 +16797,9 @@ model = "primary-model"
     }
 
     #[test]
-    async fn validate_ollama_cloud_model_accepts_remote_endpoint_and_env_key() {
+    async fn validate_ollama_cloud_model_accepts_remote_endpoint_with_typed_api_key() {
+        // V0.8.0: env-var fallback (`OLLAMA_API_KEY`) eradicated.
+        // Operators set the credential on the typed alias.
         let _env_guard = env_override_lock().await;
         let mut config = Config::default();
         config.providers.models.ollama.insert(
@@ -16835,18 +16808,13 @@ model = "primary-model"
                 base: ModelProviderConfig {
                     model: Some("glm-5:cloud".to_string()),
                     uri: Some("https://ollama.com/api".to_string()),
-                    api_key: None,
+                    api_key: Some("ollama-typed-key".to_string()),
                     ..Default::default()
                 },
             },
         );
 
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var("OLLAMA_API_KEY", "ollama-env-key") };
         let result = config.validate();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var("OLLAMA_API_KEY") };
-
         assert!(result.is_ok(), "expected validation to pass: {result:?}");
     }
 
@@ -19520,6 +19488,53 @@ auto_approve = ["file_read", "file_write", "file_edit", "memory_recall", "memory
         assert!(!MatrixConfig::prop_is_secret(
             "channels.matrix.interrupt-on-new-message"
         ));
+    }
+
+    #[test]
+    async fn apply_env_overrides_rejects_schema_version() {
+        let _env_guard = env_override_lock().await;
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::set_var("ZEROCLAW_schema_version", "99") };
+        let mut config = Config::default();
+        let result = crate::env_overrides::apply_env_overrides(&mut config);
+        // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::remove_var("ZEROCLAW_schema_version") };
+
+        let err = result.expect_err("schema_version override must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("schema_version") && msg.contains("not overridable"),
+            "error must name the path and the reason: {msg}",
+        );
+        // Untouched on rejection.
+        assert_eq!(
+            config.schema_version,
+            crate::migration::CURRENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    async fn prop_is_env_overridden_reflects_env_overridden_paths() {
+        // Empty by default — no env applied.
+        let mut cfg = Config::default();
+        assert!(!cfg.prop_is_env_overridden("channels.matrix.homeserver"));
+        assert!(!cfg.prop_is_env_overridden("gateway.request-timeout-secs"));
+
+        // Populate the field directly (the same set that
+        // `apply_env_overrides` returns from `load_or_init`).
+        cfg.env_overridden_paths = std::collections::HashSet::from([
+            "channels.matrix.homeserver".to_string(),
+            "gateway.request-timeout-secs".to_string(),
+        ]);
+
+        // True for paths in the list, false for anything else.
+        assert!(cfg.prop_is_env_overridden("channels.matrix.homeserver"));
+        assert!(cfg.prop_is_env_overridden("gateway.request-timeout-secs"));
+        assert!(!cfg.prop_is_env_overridden("channels.matrix.access-token"));
+        assert!(!cfg.prop_is_env_overridden("gateway.host"));
+        // Empty path / non-schema path → false.
+        assert!(!cfg.prop_is_env_overridden(""));
+        assert!(!cfg.prop_is_env_overridden("does.not.exist"));
     }
 
     #[test]

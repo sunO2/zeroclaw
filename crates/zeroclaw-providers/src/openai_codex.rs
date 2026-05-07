@@ -11,8 +11,6 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 const DEFAULT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const CODEX_RESPONSES_URL_ENV: &str = "ZEROCLAW_CODEX_RESPONSES_URL";
-const CODEX_BASE_URL_ENV: &str = "ZEROCLAW_CODEX_BASE_URL";
 const DEFAULT_CODEX_INSTRUCTIONS: &str =
     "You are ZeroClaw, a concise and helpful coding assistant.";
 /// OpenAI Codex speaks the "responses" wire protocol, not chat_completions.
@@ -156,20 +154,6 @@ fn build_responses_url(base_or_endpoint: &str) -> anyhow::Result<String> {
 }
 
 fn resolve_responses_url(options: &ModelProviderRuntimeOptions) -> anyhow::Result<String> {
-    if let Some(endpoint) = std::env::var(CODEX_RESPONSES_URL_ENV)
-        .ok()
-        .and_then(|value| first_nonempty(Some(&value)))
-    {
-        return build_responses_url(&endpoint);
-    }
-
-    if let Some(base_url) = std::env::var(CODEX_BASE_URL_ENV)
-        .ok()
-        .and_then(|value| first_nonempty(Some(&value)))
-    {
-        return build_responses_url(&base_url);
-    }
-
     if let Some(api_url) = options
         .provider_api_url
         .as_deref()
@@ -311,11 +295,9 @@ fn clamp_reasoning_effort(model: &str, effort: &str) -> String {
 
 fn resolve_reasoning_effort(model_id: &str, configured: Option<&str>) -> String {
     let raw = configured
-        .map(ToString::to_string)
-        .or_else(|| std::env::var("ZEROCLAW_CODEX_REASONING_EFFORT").ok())
-        .and_then(|value| first_nonempty(Some(&value)))
-        .unwrap_or_else(|| "xhigh".to_string())
-        .to_ascii_lowercase();
+        .and_then(|value| first_nonempty(Some(value)))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "xhigh".to_string());
     clamp_reasoning_effort(model_id, &raw)
 }
 
@@ -824,27 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_responses_url_prefers_explicit_endpoint_env() {
-        let _lock = env_lock();
-        let _endpoint_guard = EnvGuard::set(
-            CODEX_RESPONSES_URL_ENV,
-            Some("https://env.example.com/v1/responses"),
-        );
-        let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, Some("https://base.example.com/v1"));
-
-        let options = ModelProviderRuntimeOptions::default();
-        assert_eq!(
-            resolve_responses_url(&options).unwrap(),
-            "https://env.example.com/v1/responses"
-        );
-    }
-
-    #[test]
     fn resolve_responses_url_uses_provider_api_url_override() {
-        let _lock = env_lock();
-        let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
-        let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
-
         let options = ModelProviderRuntimeOptions {
             provider_api_url: Some("https://proxy.example.com/v1".to_string()),
             ..ModelProviderRuntimeOptions::default()
@@ -950,16 +912,6 @@ mod tests {
         assert_eq!(
             resolve_reasoning_effort("gpt-5-codex", Some("high")),
             "high".to_string()
-        );
-    }
-
-    #[test]
-    fn resolve_reasoning_effort_uses_legacy_env_when_unconfigured() {
-        let _lock = env_lock();
-        let _guard = EnvGuard::set("ZEROCLAW_CODEX_REASONING_EFFORT", Some("minimal"));
-        assert_eq!(
-            resolve_reasoning_effort("gpt-5-codex", None),
-            "low".to_string()
         );
     }
 

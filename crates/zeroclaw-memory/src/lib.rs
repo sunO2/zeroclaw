@@ -203,36 +203,15 @@ impl std::fmt::Debug for ResolvedEmbeddingConfig {
     }
 }
 
-/// Look up the provider-specific environment variable for common embedding model_providers,
-/// so that `OPENAI_API_KEY` (etc.) takes precedence over the default-provider key
-/// that the caller passes in. Returns `None` for unknown model_providers.
-fn embedding_provider_env_key(model_provider: &str) -> Option<String> {
-    let env_var = match model_provider.trim() {
-        "openai" => "OPENAI_API_KEY",
-        "openrouter" => "OPENROUTER_API_KEY",
-        "cohere" => "COHERE_API_KEY",
-        _ => return None,
-    };
-    std::env::var(env_var)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
 fn resolve_embedding_config(
     config: &MemoryConfig,
     embedding_routes: &[EmbeddingRouteConfig],
     api_key: Option<&str>,
 ) -> ResolvedEmbeddingConfig {
-    let caller_api_key = api_key
+    let fallback_api_key = api_key
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    // Prefer a provider-specific env var over the caller-supplied key, which
-    // may come from the default (chat) model_provider and differ from the embedding
-    // model_provider (issue #3083: gemini key leaking to openai embeddings endpoint).
-    let fallback_api_key =
-        embedding_provider_env_key(config.embedding_provider.trim()).or(caller_api_key);
     let fallback = ResolvedEmbeddingConfig {
         model_provider: config.embedding_provider.trim().to_string(),
         model: config.embedding_model.trim().to_string(),
@@ -397,20 +376,9 @@ pub fn create_memory_with_storage_and_routes(
             .url
             .clone()
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| std::env::var("QDRANT_URL").ok())
-            .filter(|s| !s.trim().is_empty())
-            .context(
-                "Qdrant memory backend requires url in [storage.qdrant.<alias>] or QDRANT_URL env var",
-            )?;
-        let collection = std::env::var("QDRANT_COLLECTION")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| qdrant_cfg.collection.clone());
-        let qdrant_api_key = qdrant_cfg
-            .api_key
-            .clone()
-            .or_else(|| std::env::var("QDRANT_API_KEY").ok())
-            .filter(|s| !s.trim().is_empty());
+            .context("Qdrant memory backend requires `url` in [storage.qdrant.<alias>]")?;
+        let collection = qdrant_cfg.collection.clone();
+        let qdrant_api_key = qdrant_cfg.api_key.clone().filter(|s| !s.trim().is_empty());
         let embedder: Arc<dyn embeddings::EmbeddingProvider> =
             Arc::from(embeddings::create_embedding_provider(
                 &resolved_embedding.model_provider,
@@ -782,20 +750,16 @@ mod tests {
         );
     }
 
-    // Regression guard for issue #3083: when default_model_provider is "gemini"
-    // (api_key = gemini key) but embedding_provider is "cohere", the
-    // embedding model_provider's own env var (COHERE_API_KEY) must take precedence
-    // over the caller-supplied key (which belongs to the default model_provider).
+    // V0.8.0: per-provider env-var fallbacks (`OPENAI_API_KEY`,
+    // `COHERE_API_KEY`, `OPENROUTER_API_KEY`) eradicated. The cross-provider
+    // leak this test guarded against (#3083) is now prevented by operators
+    // setting embedding-route credentials directly in the schema:
+    //   ZEROCLAW_memory_embedding_routes_<hint>_api_key=<value>
     //
-    // Uses COHERE_API_KEY to avoid accidental collision with OPENAI_API_KEY
-    // that may be set in the developer environment.
+    // The simplified `resolve_embedding_config` falls through caller-supplied
+    // `api_key` only when no embedding-route override is configured.
     #[test]
-    fn resolve_embedding_config_uses_embedding_provider_env_key_not_default_provider_key() {
-        // COHERE_API_KEY is almost certainly unset in normal dev environments.
-        let prev = std::env::var("COHERE_API_KEY").ok();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var("COHERE_API_KEY", "cohere-from-env") };
-
+    fn resolve_embedding_config_uses_caller_api_key_when_no_route_override() {
         let cfg = MemoryConfig {
             embedding_provider: "cohere".into(),
             embedding_model: "embed-english-v3.0".into(),
@@ -803,26 +767,8 @@ mod tests {
             ..MemoryConfig::default()
         };
 
-        // Simulate: caller passes the Gemini (default_model_provider) api key.
-        let resolved = resolve_embedding_config(&cfg, &[], Some("gemini-key-must-not-be-used"));
+        let resolved = resolve_embedding_config(&cfg, &[], Some("caller-supplied-key"));
 
-        // Restore env.
-        match prev {
-            // SAFETY: test-only, single-threaded test runner.
-            Some(v) => unsafe { std::env::set_var("COHERE_API_KEY", v) },
-            // SAFETY: test-only, single-threaded test runner.
-            None => unsafe { std::env::remove_var("COHERE_API_KEY") },
-        }
-
-        assert_eq!(
-            resolved.api_key.as_deref(),
-            Some("cohere-from-env"),
-            "embedding api_key must come from COHERE_API_KEY env var, not from the default model_provider key"
-        );
-        assert_ne!(
-            resolved.api_key.as_deref(),
-            Some("gemini-key-must-not-be-used"),
-            "default_model_provider key must not leak to the embedding model_provider"
-        );
+        assert_eq!(resolved.api_key.as_deref(), Some("caller-supplied-key"));
     }
 }

@@ -6,8 +6,8 @@
 //!
 //! # Usage
 //!
-//! The `gemini` binary must be available in `PATH`, or its location must be
-//! set via the `GEMINI_CLI_PATH` environment variable.
+//! The `gemini` binary must be available in `PATH`, or its location can be
+//! set via the typed alias's `binary_path` field.
 //!
 //! Gemini CLI is invoked as:
 //! ```text
@@ -30,19 +30,12 @@
 //! Authentication is handled by the Gemini CLI itself (its own credential store).
 //! No explicit API key is required by this model_provider.
 //!
-//! # Environment variables
-//!
-//! - `GEMINI_CLI_PATH` — override the path to the `gemini` binary (default: `"gemini"`)
-
 use crate::traits::{ChatRequest, ChatResponse, ModelProvider, TokenUsage};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
-
-/// Environment variable for overriding the path to the `gemini` binary.
-pub const GEMINI_CLI_PATH_ENV: &str = "GEMINI_CLI_PATH";
 
 /// Default `gemini` binary name (resolved via `PATH`).
 const DEFAULT_GEMINI_CLI_BINARY: &str = "gemini";
@@ -67,17 +60,14 @@ pub struct GeminiCliModelProvider {
 }
 
 impl GeminiCliModelProvider {
-    /// Create a new `GeminiCliModelProvider`.
-    ///
-    /// The binary path is resolved from `GEMINI_CLI_PATH` env var if set,
-    /// otherwise defaults to `"gemini"` (found via `PATH`).
-    pub fn new() -> Self {
-        let binary_path = std::env::var(GEMINI_CLI_PATH_ENV)
-            .ok()
-            .filter(|path| !path.trim().is_empty())
+    /// Create a new `GeminiCliModelProvider`. Pass `None` to use the default
+    /// `"gemini"` (PATH lookup); pass an explicit path to override.
+    pub fn new(binary_path: Option<&str>) -> Self {
+        let binary_path = binary_path
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_GEMINI_CLI_BINARY));
-
         Self { binary_path }
     }
 
@@ -187,7 +177,7 @@ impl GeminiCliModelProvider {
 
 impl Default for GeminiCliModelProvider {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -235,55 +225,23 @@ impl ModelProvider for GeminiCliModelProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::env_lock;
 
     #[test]
-    fn new_uses_env_override() {
-        let _guard = env_lock();
-        let orig = std::env::var(GEMINI_CLI_PATH_ENV).ok();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(GEMINI_CLI_PATH_ENV, "/usr/local/bin/gemini") };
-        let model_provider = GeminiCliModelProvider::new();
-        assert_eq!(
-            model_provider.binary_path,
-            PathBuf::from("/usr/local/bin/gemini")
-        );
-        match orig {
-            // SAFETY: test-only, single-threaded test runner.
-            Some(v) => unsafe { std::env::set_var(GEMINI_CLI_PATH_ENV, v) },
-            // SAFETY: test-only, single-threaded test runner.
-            None => unsafe { std::env::remove_var(GEMINI_CLI_PATH_ENV) },
-        }
+    fn new_uses_explicit_binary_path() {
+        let p = GeminiCliModelProvider::new(Some("/usr/local/bin/gemini"));
+        assert_eq!(p.binary_path, PathBuf::from("/usr/local/bin/gemini"));
     }
 
     #[test]
     fn new_defaults_to_gemini() {
-        let _guard = env_lock();
-        let orig = std::env::var(GEMINI_CLI_PATH_ENV).ok();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var(GEMINI_CLI_PATH_ENV) };
-        let model_provider = GeminiCliModelProvider::new();
-        assert_eq!(model_provider.binary_path, PathBuf::from("gemini"));
-        if let Some(v) = orig {
-            // SAFETY: test-only, single-threaded test runner.
-            unsafe { std::env::set_var(GEMINI_CLI_PATH_ENV, v) };
-        }
+        let p = GeminiCliModelProvider::new(None);
+        assert_eq!(p.binary_path, PathBuf::from("gemini"));
     }
 
     #[test]
-    fn new_ignores_blank_env_override() {
-        let _guard = env_lock();
-        let orig = std::env::var(GEMINI_CLI_PATH_ENV).ok();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(GEMINI_CLI_PATH_ENV, "   ") };
-        let model_provider = GeminiCliModelProvider::new();
-        assert_eq!(model_provider.binary_path, PathBuf::from("gemini"));
-        match orig {
-            // SAFETY: test-only, single-threaded test runner.
-            Some(v) => unsafe { std::env::set_var(GEMINI_CLI_PATH_ENV, v) },
-            // SAFETY: test-only, single-threaded test runner.
-            None => unsafe { std::env::remove_var(GEMINI_CLI_PATH_ENV) },
-        }
+    fn new_ignores_blank_binary_path() {
+        let p = GeminiCliModelProvider::new(Some("   "));
+        assert_eq!(p.binary_path, PathBuf::from("gemini"));
     }
 
     #[test]

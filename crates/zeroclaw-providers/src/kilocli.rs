@@ -6,8 +6,8 @@
 //!
 //! # Usage
 //!
-//! The `kilo` binary must be available in `PATH`, or its location must be
-//! set via the `KILO_CLI_PATH` environment variable.
+//! The `kilo` binary must be available in `PATH`, or its location can be
+//! set via the typed alias's `binary_path` field.
 //!
 //! KiloCLI is invoked as:
 //! ```text
@@ -30,19 +30,12 @@
 //! Authentication is handled by KiloCLI itself (its own credential store).
 //! No explicit API key is required by this model_provider.
 //!
-//! # Environment variables
-//!
-//! - `KILO_CLI_PATH` — override the path to the `kilo` binary (default: `"kilo"`)
-
 use crate::traits::{ChatRequest, ChatResponse, ModelProvider, TokenUsage};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
-
-/// Environment variable for overriding the path to the `kilo` binary.
-pub const KILO_CLI_PATH_ENV: &str = "KILO_CLI_PATH";
 
 /// Default `kilo` binary name (resolved via `PATH`).
 const DEFAULT_KILO_CLI_BINARY: &str = "kilo";
@@ -67,17 +60,14 @@ pub struct KiloCliModelProvider {
 }
 
 impl KiloCliModelProvider {
-    /// Create a new `KiloCliModelProvider`.
-    ///
-    /// The binary path is resolved from `KILO_CLI_PATH` env var if set,
-    /// otherwise defaults to `"kilo"` (found via `PATH`).
-    pub fn new() -> Self {
-        let binary_path = std::env::var(KILO_CLI_PATH_ENV)
-            .ok()
-            .filter(|path| !path.trim().is_empty())
+    /// Create a new `KiloCliModelProvider`. Pass `None` to use the default
+    /// `"kilo"` (PATH lookup); pass an explicit path to override.
+    pub fn new(binary_path: Option<&str>) -> Self {
+        let binary_path = binary_path
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_KILO_CLI_BINARY));
-
         Self { binary_path }
     }
 
@@ -189,7 +179,7 @@ impl KiloCliModelProvider {
 
 impl Default for KiloCliModelProvider {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -237,55 +227,23 @@ impl ModelProvider for KiloCliModelProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::env_lock;
 
     #[test]
-    fn new_uses_env_override() {
-        let _guard = env_lock();
-        let orig = std::env::var(KILO_CLI_PATH_ENV).ok();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(KILO_CLI_PATH_ENV, "/usr/local/bin/kilo") };
-        let model_provider = KiloCliModelProvider::new();
-        assert_eq!(
-            model_provider.binary_path,
-            PathBuf::from("/usr/local/bin/kilo")
-        );
-        match orig {
-            // SAFETY: test-only, single-threaded test runner.
-            Some(v) => unsafe { std::env::set_var(KILO_CLI_PATH_ENV, v) },
-            // SAFETY: test-only, single-threaded test runner.
-            None => unsafe { std::env::remove_var(KILO_CLI_PATH_ENV) },
-        }
+    fn new_uses_explicit_binary_path() {
+        let p = KiloCliModelProvider::new(Some("/usr/local/bin/kilo"));
+        assert_eq!(p.binary_path, PathBuf::from("/usr/local/bin/kilo"));
     }
 
     #[test]
     fn new_defaults_to_kilo() {
-        let _guard = env_lock();
-        let orig = std::env::var(KILO_CLI_PATH_ENV).ok();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var(KILO_CLI_PATH_ENV) };
-        let model_provider = KiloCliModelProvider::new();
-        assert_eq!(model_provider.binary_path, PathBuf::from("kilo"));
-        if let Some(v) = orig {
-            // SAFETY: test-only, single-threaded test runner.
-            unsafe { std::env::set_var(KILO_CLI_PATH_ENV, v) };
-        }
+        let p = KiloCliModelProvider::new(None);
+        assert_eq!(p.binary_path, PathBuf::from("kilo"));
     }
 
     #[test]
-    fn new_ignores_blank_env_override() {
-        let _guard = env_lock();
-        let orig = std::env::var(KILO_CLI_PATH_ENV).ok();
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var(KILO_CLI_PATH_ENV, "   ") };
-        let model_provider = KiloCliModelProvider::new();
-        assert_eq!(model_provider.binary_path, PathBuf::from("kilo"));
-        match orig {
-            // SAFETY: test-only, single-threaded test runner.
-            Some(v) => unsafe { std::env::set_var(KILO_CLI_PATH_ENV, v) },
-            // SAFETY: test-only, single-threaded test runner.
-            None => unsafe { std::env::remove_var(KILO_CLI_PATH_ENV) },
-        }
+    fn new_ignores_blank_binary_path() {
+        let p = KiloCliModelProvider::new(Some("   "));
+        assert_eq!(p.binary_path, PathBuf::from("kilo"));
     }
 
     #[test]

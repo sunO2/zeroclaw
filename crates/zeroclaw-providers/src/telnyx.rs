@@ -97,31 +97,11 @@ impl TelnyxModelProvider {
     }
 }
 
-/// Resolve Telnyx API key from parameter or environment.
 fn resolve_telnyx_api_key(api_key: Option<&str>) -> Option<String> {
-    if let Some(key) = api_key.map(str::trim).filter(|k| !k.is_empty()) {
-        return Some(key.to_string());
-    }
-
-    // Try Telnyx-specific env var first
-    if let Ok(key) = std::env::var("TELNYX_API_KEY") {
-        let key = key.trim();
-        if !key.is_empty() {
-            return Some(key.to_string());
-        }
-    }
-
-    // Fall back to generic env vars
-    for env_var in ["ZEROCLAW_API_KEY", "API_KEY"] {
-        if let Ok(key) = std::env::var(env_var) {
-            let key = key.trim();
-            if !key.is_empty() {
-                return Some(key.to_string());
-            }
-        }
-    }
-
-    None
+    api_key
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Response from the /models endpoint

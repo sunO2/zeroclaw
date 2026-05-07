@@ -288,15 +288,18 @@ fn json_to_toml(v: serde_json::Value) -> Option<toml::Value> {
     }
 }
 
-/// Validate that an alias key is safe for use in TOML dotted paths, URLs, and
-/// filesystem paths on Windows, macOS, and Linux.
+/// Validate that an alias key is safe for use in TOML dotted paths, URLs,
+/// filesystem paths on Windows/macOS/Linux, and `ZEROCLAW_*` env-var grammar.
 ///
-/// Allowed: `[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}` — alphanumeric start, then
-/// alphanumeric, underscore, or hyphen. Maximum 63 characters.
+/// Allowed: lowercase ASCII alphanumeric plus single underscore, 1-63 chars.
+/// Must start AND end with alphanumeric. Adjacent underscores (`__`) are
+/// forbidden because they collide with the env-var grammar's path separator.
 ///
-/// Dots are forbidden because they are TOML key separators. Spaces and all
-/// other punctuation are forbidden to stay safe across OS path APIs and URL
-/// path segments.
+/// The env-var grammar uses `__` as path separator, which lets aliases keep
+/// single `_` literally (`prod_v2`, `staging_api`). Hyphens are forbidden
+/// because they are illegal in POSIX env-var identifiers; uppercase is
+/// forbidden so the bootstrap env-vars (`ZEROCLAW_WORKSPACE`,
+/// `ZEROCLAW_CONFIG_DIR`) stay disambiguated by case.
 pub fn validate_alias_key(key: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("alias must not be empty".to_string());
@@ -308,16 +311,28 @@ pub fn validate_alias_key(key: &str) -> Result<(), String> {
             key.len()
         ));
     }
-    let mut chars = key.chars();
-    let first = chars.next().unwrap();
-    if !first.is_ascii_alphanumeric() {
-        return Err(format!("alias '{}' must start with a letter or digit", key));
+    let first = key.chars().next().unwrap();
+    let last = key.chars().next_back().unwrap();
+    if !matches!(first, 'a'..='z' | '0'..='9') {
+        return Err(format!(
+            "alias '{key}' must start with a lowercase letter or digit"
+        ));
     }
-    for ch in chars {
-        if !matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_') {
+    if !matches!(last, 'a'..='z' | '0'..='9') {
+        return Err(format!(
+            "alias '{key}' must end with a lowercase letter or digit"
+        ));
+    }
+    if key.contains("__") {
+        return Err(format!(
+            "alias '{key}' must not contain `__`; it is reserved as the env-var grammar's path separator"
+        ));
+    }
+    for ch in key.chars() {
+        if !matches!(ch, 'a'..='z' | '0'..='9' | '_') {
             return Err(format!(
                 "alias '{}' contains invalid character {:?}; \
-                 only letters, digits, hyphens, and underscores are allowed",
+                 only lowercase letters, digits, and single underscores are allowed (no hyphen, no uppercase)",
                 key, ch
             ));
         }
@@ -365,14 +380,16 @@ mod tests {
     // ── validate_alias_key ────────────────────────────────────────────────
 
     #[test]
-    fn validate_alias_key_accepts_simple_names() {
+    fn validate_alias_key_accepts_lowercase_alphanumeric_with_underscore() {
         assert!(validate_alias_key("default").is_ok());
         assert!(validate_alias_key("work").is_ok());
-        assert!(validate_alias_key("my-alias").is_ok());
-        assert!(validate_alias_key("my_alias").is_ok());
         assert!(validate_alias_key("alias123").is_ok());
-        assert!(validate_alias_key("A").is_ok());
-        assert!(validate_alias_key("z9-Z").is_ok());
+        assert!(validate_alias_key("a").is_ok());
+        assert!(validate_alias_key("prod2024").is_ok());
+        // V0.8.0: env-var grammar uses `__` as separator, so single `_`
+        // inside an alias is unambiguous.
+        assert!(validate_alias_key("prod_v2").is_ok());
+        assert!(validate_alias_key("staging_api").is_ok());
     }
 
     #[test]
@@ -381,8 +398,44 @@ mod tests {
     }
 
     #[test]
+    fn validate_alias_key_rejects_uppercase() {
+        // Leading uppercase trips the start-char rule.
+        let err = validate_alias_key("MyAlias").unwrap_err();
+        assert!(err.contains("must start with"), "{err}");
+        let err = validate_alias_key("A").unwrap_err();
+        assert!(err.contains("must start with"), "{err}");
+        // Embedded uppercase trips the per-char rule.
+        let err = validate_alias_key("myAlias").unwrap_err();
+        assert!(err.contains("invalid character"), "{err}");
+    }
+
+    #[test]
+    fn validate_alias_key_rejects_leading_underscore() {
+        let err = validate_alias_key("_bad").unwrap_err();
+        assert!(err.contains("must start with"), "{err}");
+    }
+
+    #[test]
+    fn validate_alias_key_rejects_trailing_underscore() {
+        let err = validate_alias_key("bad_").unwrap_err();
+        assert!(err.contains("must end with"), "{err}");
+    }
+
+    #[test]
+    fn validate_alias_key_rejects_double_underscore() {
+        let err = validate_alias_key("foo__bar").unwrap_err();
+        assert!(err.contains("must not contain `__`"), "{err}");
+    }
+
+    #[test]
+    fn validate_alias_key_rejects_hyphen() {
+        // V0.8.0: hyphens are illegal in env-var identifiers.
+        let err = validate_alias_key("my-alias").unwrap_err();
+        assert!(err.contains("invalid character"), "{err}");
+    }
+
+    #[test]
     fn validate_alias_key_rejects_dot() {
-        // dots break TOML dotted-key path parsing
         let err = validate_alias_key("my.alias").unwrap_err();
         assert!(err.contains("invalid character"), "{err}");
     }
@@ -397,18 +450,6 @@ mod tests {
     fn validate_alias_key_rejects_space() {
         let err = validate_alias_key("my alias").unwrap_err();
         assert!(err.contains("invalid character"), "{err}");
-    }
-
-    #[test]
-    fn validate_alias_key_rejects_leading_hyphen() {
-        let err = validate_alias_key("-bad").unwrap_err();
-        assert!(err.contains("must start with"), "{err}");
-    }
-
-    #[test]
-    fn validate_alias_key_rejects_leading_underscore() {
-        let err = validate_alias_key("_bad").unwrap_err();
-        assert!(err.contains("must start with"), "{err}");
     }
 
     #[test]

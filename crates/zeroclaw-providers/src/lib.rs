@@ -50,26 +50,12 @@ use std::path::PathBuf;
 
 const MAX_API_ERROR_CHARS: usize = 500;
 const MINIMAX_INTL_BASE_URL: &str = "https://api.minimax.io/v1";
-const MINIMAX_OAUTH_GLOBAL_TOKEN_ENDPOINT: &str = "https://api.minimax.io/oauth/token";
-const MINIMAX_OAUTH_CN_TOKEN_ENDPOINT: &str = "https://api.minimaxi.com/oauth/token";
-const MINIMAX_OAUTH_PLACEHOLDER: &str = "minimax-oauth";
-const MINIMAX_OAUTH_CN_PLACEHOLDER: &str = "minimax-oauth-cn";
-const MINIMAX_OAUTH_TOKEN_ENV: &str = "MINIMAX_OAUTH_TOKEN";
-const MINIMAX_API_KEY_ENV: &str = "MINIMAX_API_KEY";
-const MINIMAX_OAUTH_REFRESH_TOKEN_ENV: &str = "MINIMAX_OAUTH_REFRESH_TOKEN";
-const MINIMAX_OAUTH_REGION_ENV: &str = "MINIMAX_OAUTH_REGION";
-const MINIMAX_OAUTH_CLIENT_ID_ENV: &str = "MINIMAX_OAUTH_CLIENT_ID";
-const MINIMAX_OAUTH_DEFAULT_CLIENT_ID: &str = "78257093-7e40-4613-99e0-527b14b39113";
 const GLM_GLOBAL_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
 const MOONSHOT_INTL_BASE_URL: &str = "https://api.moonshot.ai/v1";
 const QWEN_CN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const QWEN_OAUTH_BASE_FALLBACK_URL: &str = QWEN_CN_BASE_URL;
 const QWEN_OAUTH_TOKEN_ENDPOINT: &str = "https://chat.qwen.ai/api/v1/oauth2/token";
 const QWEN_OAUTH_PLACEHOLDER: &str = "qwen-oauth";
-const QWEN_OAUTH_TOKEN_ENV: &str = "QWEN_OAUTH_TOKEN";
-const QWEN_OAUTH_REFRESH_TOKEN_ENV: &str = "QWEN_OAUTH_REFRESH_TOKEN";
-const QWEN_OAUTH_RESOURCE_URL_ENV: &str = "QWEN_OAUTH_RESOURCE_URL";
-const QWEN_OAUTH_CLIENT_ID_ENV: &str = "QWEN_OAUTH_CLIENT_ID";
 const QWEN_OAUTH_DEFAULT_CLIENT_ID: &str = "f0304373b74a44d2b584a3fb70ca9e56";
 const QWEN_OAUTH_CREDENTIAL_FILE: &str = ".qwen/oauth_creds.json";
 const ZAI_GLOBAL_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
@@ -186,37 +172,6 @@ pub fn is_doubao_alias(name: &str) -> bool {
     matches!(name, "doubao" | "volcengine" | "ark" | "doubao-cn")
 }
 
-#[derive(Clone, Copy, Debug)]
-enum MinimaxOauthRegion {
-    Global,
-    Cn,
-}
-
-impl MinimaxOauthRegion {
-    fn token_endpoint(self) -> &'static str {
-        match self {
-            Self::Global => MINIMAX_OAUTH_GLOBAL_TOKEN_ENDPOINT,
-            Self::Cn => MINIMAX_OAUTH_CN_TOKEN_ENDPOINT,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct MinimaxOauthRefreshResponse {
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    access_token: Option<String>,
-    #[serde(default)]
-    base_resp: Option<MinimaxOauthBaseResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MinimaxOauthBaseResponse {
-    #[serde(default)]
-    status_msg: Option<String>,
-}
-
 #[derive(Clone, Deserialize, Default)]
 struct QwenOauthCredentials {
     #[serde(default)]
@@ -268,47 +223,12 @@ impl std::fmt::Debug for QwenOauthProviderContext {
     }
 }
 
-fn read_non_empty_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn is_minimax_oauth_placeholder(value: &str) -> bool {
-    value.eq_ignore_ascii_case(MINIMAX_OAUTH_PLACEHOLDER)
-        || value.eq_ignore_ascii_case(MINIMAX_OAUTH_CN_PLACEHOLDER)
-}
-
-fn minimax_oauth_region(name: &str) -> MinimaxOauthRegion {
-    if let Some(region) = read_non_empty_env(MINIMAX_OAUTH_REGION_ENV) {
-        let normalized = region.to_ascii_lowercase();
-        if matches!(normalized.as_str(), "cn" | "china") {
-            return MinimaxOauthRegion::Cn;
-        }
-        if matches!(normalized.as_str(), "global" | "intl" | "international") {
-            return MinimaxOauthRegion::Global;
-        }
-    }
-
-    if is_minimax_cn_alias(name) {
-        MinimaxOauthRegion::Cn
-    } else {
-        MinimaxOauthRegion::Global
-    }
-}
-
-fn minimax_oauth_client_id() -> String {
-    read_non_empty_env(MINIMAX_OAUTH_CLIENT_ID_ENV)
-        .unwrap_or_else(|| MINIMAX_OAUTH_DEFAULT_CLIENT_ID.to_string())
-}
-
 fn qwen_oauth_client_id() -> String {
-    read_non_empty_env(QWEN_OAUTH_CLIENT_ID_ENV)
-        .unwrap_or_else(|| QWEN_OAUTH_DEFAULT_CLIENT_ID.to_string())
+    QWEN_OAUTH_DEFAULT_CLIENT_ID.to_string()
 }
 
 fn qwen_oauth_credentials_file_path() -> Option<PathBuf> {
+    // OS path resolution; not a config override.
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
@@ -466,145 +386,47 @@ fn resolve_qwen_oauth_context(credential_override: Option<&str>) -> QwenOauthPro
         };
     }
 
+    // Qwen OAuth: file cache at `~/.qwen/oauth_creds.json` (populated by the
+    // upstream Qwen CLI's `qwen login` flow) is the ambient source. Direct
+    // injection goes through the schema-mirror grammar.
     let mut cached = read_qwen_oauth_cached_credentials();
 
-    let env_token = read_non_empty_env(QWEN_OAUTH_TOKEN_ENV);
-    let env_refresh_token = read_non_empty_env(QWEN_OAUTH_REFRESH_TOKEN_ENV);
-    let env_resource_url = read_non_empty_env(QWEN_OAUTH_RESOURCE_URL_ENV);
+    let should_refresh = cached.as_ref().is_some_and(qwen_oauth_token_expired)
+        || cached
+            .as_ref()
+            .and_then(|credentials| credentials.access_token.as_deref())
+            .is_none_or(|value| value.trim().is_empty());
 
-    if env_token.is_none() {
-        let refresh_token = env_refresh_token.clone().or_else(|| {
-            cached
-                .as_ref()
-                .and_then(|credentials| credentials.refresh_token.clone())
-        });
-
-        let should_refresh = cached.as_ref().is_some_and(qwen_oauth_token_expired)
-            || cached
-                .as_ref()
-                .and_then(|credentials| credentials.access_token.as_deref())
-                .is_none_or(|value| value.trim().is_empty());
-
-        if should_refresh && let Some(refresh_token) = refresh_token.as_deref() {
-            match refresh_qwen_oauth_access_token(refresh_token) {
-                Ok(refreshed) => {
-                    cached = Some(refreshed);
-                }
-                Err(error) => {
-                    tracing::warn!(error = %error, "Qwen OAuth refresh failed");
-                }
+    if should_refresh
+        && let Some(refresh_token) = cached
+            .as_ref()
+            .and_then(|credentials| credentials.refresh_token.clone())
+    {
+        match refresh_qwen_oauth_access_token(&refresh_token) {
+            Ok(refreshed) => {
+                cached = Some(refreshed);
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Qwen OAuth refresh failed");
             }
         }
     }
 
-    let mut credential = env_token.or_else(|| {
-        cached
-            .as_ref()
-            .and_then(|credentials| credentials.access_token.clone())
-    });
-    credential = credential
-        .as_deref()
+    let credential = cached
+        .as_ref()
+        .and_then(|credentials| credentials.access_token.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
 
-    if credential.is_none() && !placeholder_requested {
-        credential = read_non_empty_env("DASHSCOPE_API_KEY");
-    }
-
-    let base_url = env_resource_url
-        .as_deref()
-        .and_then(normalize_qwen_oauth_base_url)
-        .or_else(|| {
-            cached
-                .as_ref()
-                .and_then(|credentials| credentials.resource_url.as_deref())
-                .and_then(normalize_qwen_oauth_base_url)
-        });
+    let base_url = cached
+        .as_ref()
+        .and_then(|credentials| credentials.resource_url.as_deref())
+        .and_then(normalize_qwen_oauth_base_url);
 
     QwenOauthProviderContext {
         credential,
         base_url,
-    }
-}
-
-fn resolve_minimax_static_credential() -> Option<String> {
-    read_non_empty_env(MINIMAX_OAUTH_TOKEN_ENV).or_else(|| read_non_empty_env(MINIMAX_API_KEY_ENV))
-}
-
-fn refresh_minimax_oauth_access_token(name: &str, refresh_token: &str) -> anyhow::Result<String> {
-    let region = minimax_oauth_region(name);
-    let endpoint = region.token_endpoint();
-    let client_id = minimax_oauth_client_id();
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new());
-
-    let response = client
-        .post(endpoint)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Accept", "application/json")
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id.as_str()),
-        ])
-        .send()
-        .map_err(|error| anyhow::anyhow!("MiniMax OAuth refresh request failed: {error}"))?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .unwrap_or_else(|_| "<failed to read MiniMax OAuth response body>".to_string());
-
-    let parsed = serde_json::from_str::<MinimaxOauthRefreshResponse>(&body).ok();
-
-    if !status.is_success() {
-        let detail = parsed
-            .as_ref()
-            .and_then(|payload| payload.base_resp.as_ref())
-            .and_then(|base| base.status_msg.as_deref())
-            .filter(|msg| !msg.trim().is_empty())
-            .unwrap_or(body.as_str());
-        anyhow::bail!("MiniMax OAuth refresh failed (HTTP {status}): {detail}");
-    }
-
-    if let Some(payload) = parsed {
-        if let Some(status_text) = payload.status.as_deref()
-            && !status_text.eq_ignore_ascii_case("success")
-        {
-            let detail = payload
-                .base_resp
-                .as_ref()
-                .and_then(|base| base.status_msg.as_deref())
-                .unwrap_or(status_text);
-            anyhow::bail!("MiniMax OAuth refresh failed: {detail}");
-        }
-
-        if let Some(token) = payload
-            .access_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-        {
-            return Ok(token.to_string());
-        }
-    }
-
-    anyhow::bail!("MiniMax OAuth refresh response missing access_token");
-}
-
-fn resolve_minimax_oauth_refresh_token(name: &str) -> Option<String> {
-    let refresh_token = read_non_empty_env(MINIMAX_OAUTH_REFRESH_TOKEN_ENV)?;
-
-    match refresh_minimax_oauth_access_token(name, &refresh_token) {
-        Ok(token) => Some(token),
-        Err(error) => {
-            tracing::warn!(model_provider = name, error = %error, "MiniMax OAuth refresh failed");
-            None
-        }
     }
 }
 
@@ -629,7 +451,6 @@ pub struct ModelProviderRuntimeOptions {
     /// `None` uses the model_provider's built-in default (120s for compatible model_providers).
     pub provider_timeout_secs: Option<u64>,
     /// Extra HTTP headers to include in model_provider API requests.
-    /// These are merged from the config file and `ZEROCLAW_EXTRA_HEADERS` env var.
     pub extra_headers: std::collections::HashMap<String, String>,
     /// Custom API path suffix for OpenAI-compatible model_providers
     /// (e.g. "/v2/generate" instead of the default "/chat/completions").
@@ -643,30 +464,15 @@ pub struct ModelProviderRuntimeOptions {
     /// Extra JSON parameters merged into API request bodies at the top level.
     /// Propagated from `ModelProviderConfig::provider_extra`.
     pub provider_extra: Option<serde_json::Value>,
-    /// Azure OpenAI resource name. Populated from
-    /// `AzureModelProviderConfig.resource` when the active model_provider family is
-    /// `azure`. Required for Azure runtime construction; the factory errors
-    /// loudly if missing instead of falling back to env vars.
+    /// Family-specific extras extracted from typed alias configs by
+    /// `provider_runtime_options_for_agent`. Each factory branch reads only
+    /// the fields it cares about.
     pub azure_resource: Option<String>,
-    /// Azure OpenAI deployment name. Populated from
-    /// `AzureModelProviderConfig.deployment`. Required.
     pub azure_deployment: Option<String>,
-    /// Azure OpenAI API version. Populated from
-    /// `AzureModelProviderConfig.api_version`. Optional (model_provider falls back
-    /// to its own default).
     pub azure_api_version: Option<String>,
-    /// OpenAI-Codex variant marker. Populated from
-    /// `ModelProviderConfig.requires_openai_auth` on the resolved alias entry
-    /// when the family is `openai`. The factory dispatches to
-    /// `OpenAiCodexModelProvider` when this is true (the codex variant is selected
-    /// by the alias's typed config, not by family name).
     pub requires_openai_auth: bool,
-    /// Override the model_provider's default for native tool calling. `None`
-    /// honors the per-family built-in choice. `Some(true)` forces native tool
-    /// calls on; `Some(false)` forces text-fallback. Propagated from
-    /// `ModelProviderConfig::native_tools`. Currently consulted only by the
-    /// Groq factory branch.
     pub native_tools: Option<bool>,
+    pub cli_binary_path: Option<String>,
 }
 
 impl Default for ModelProviderRuntimeOptions {
@@ -689,6 +495,7 @@ impl Default for ModelProviderRuntimeOptions {
             azure_api_version: None,
             requires_openai_auth: false,
             native_tools: None,
+            cli_binary_path: None,
         }
     }
 }
@@ -740,31 +547,25 @@ pub fn model_provider_runtime_options_from_model_provider_entry(
         reasoning_effort: config.runtime.reasoning_effort.clone(),
         provider_timeout_secs: Some(entry.and_then(|e| e.timeout_secs).unwrap_or(120)),
         extra_headers: entry.map(|e| e.extra_headers.clone()).unwrap_or_default(),
-        // api_path is gone — the schema's `uri` field is now the full endpoint URL.
-        // Runtime-side proxy-routing concatenation (uri + api_path) is no longer
-        // needed; operators set uri to the full endpoint they want hit.
         api_path: None,
         provider_max_tokens: entry.and_then(|e| e.max_tokens),
         merge_system_into_user,
         provider_extra: entry.and_then(|e| e.provider_extra.clone()),
-        // Family-specific fields are populated only by the agent-aware
-        // resolver (`provider_runtime_options_for_agent`), where we have the
-        // typed alias context to look up the family's typed config.
+        native_tools: entry.and_then(|e| e.native_tools),
+        // Family-specific extras populated by `provider_runtime_options_for_agent`
+        // when the agent context is available.
         azure_resource: None,
         azure_deployment: None,
         azure_api_version: None,
-        requires_openai_auth: false,
-        native_tools: entry.and_then(|e| e.native_tools),
+        requires_openai_auth: entry.is_some_and(|e| e.requires_openai_auth),
+        cli_binary_path: None,
     }
 }
 
 /// Resolve `ModelProviderRuntimeOptions` from an agent's `model_provider` alias
 /// (`"<type>.<alias>"`). Falls back to `first_model_provider()` when the agent
 /// alias doesn't exist, doesn't have a `model_provider` set, or names a
-/// non-existent model_provider entry — preserving the conservative legacy
-/// behavior so misconfigured callsites still get *something* instead of
-/// crashing the channel server. The fallback is logged so multi-alias
-/// users can spot misconfiguration.
+/// non-existent model_provider entry.
 pub fn provider_runtime_options_for_agent(
     config: &zeroclaw_config::schema::Config,
     agent_alias: &str,
@@ -778,30 +579,23 @@ pub fn provider_runtime_options_for_agent(
     });
     let mut options = model_provider_runtime_options_from_model_provider_entry(config, entry);
 
-    // Family-aware extras. Each branch below pulls the typed alias config
-    // from its slot and projects family-specific fields onto
-    // `ModelProviderRuntimeOptions` so the factory can dispatch by canonical
-    // family name only — no synonym match arms in the runtime registry,
-    // no `*_base_url(name)` lookups, no string-keyed regional dispatch.
     if let Some(agent) = config.agents.get(agent_alias)
         && let Some((family, alias)) = agent.model_provider.split_once('.')
     {
         // Multi-endpoint families: pre-resolve the URI via the centralized
         // `resolved_endpoint_uri` dispatch (driven by
-        // `for_each_model_provider_slot!`). Operator-set `base.uri` (already
-        // populated into `options.provider_api_url` by
-        // `model_provider_runtime_options_from_model_provider_entry`) wins
-        // over the family-default endpoint URI.
+        // `for_each_model_provider_slot!`). Operator-set `base.uri` already
+        // populated above wins over the family default.
         if options.provider_api_url.is_none()
             && let Some(uri) = config.providers.models.resolved_endpoint_uri(family, alias)
         {
             options.provider_api_url = Some(uri.to_string());
         }
 
-        // Family-specific extras that don't fit the endpoint-URI shape.
+        // Family-specific extras pulled from typed alias configs. The match
+        // arm is structural — each branch reads its own family's typed
+        // extras into the runtime options for the factory to consume.
         match family {
-            // Azure: typed resource / deployment / api_version flow through
-            // for runtime URI templating.
             "azure" => {
                 if let Some(cfg) = config.providers.models.azure.get(alias) {
                     options.azure_resource = cfg.resource.clone();
@@ -809,13 +603,14 @@ pub fn provider_runtime_options_for_agent(
                     options.azure_api_version = cfg.api_version.clone();
                 }
             }
-            // OpenAI: codex variant marker. The codex alias lives under
-            // `[providers.models.openai.codex]` with `requires_openai_auth =
-            // true`; the factory dispatches to OpenAiCodexModelProvider when
-            // this flag is set, regardless of family name being `openai`.
-            "openai" => {
-                if let Some(cfg) = config.providers.models.openai.get(alias) {
-                    options.requires_openai_auth = cfg.base.requires_openai_auth;
+            "kilocli" => {
+                if let Some(cfg) = config.providers.models.kilocli.get(alias) {
+                    options.cli_binary_path = cfg.binary_path.clone();
+                }
+            }
+            "gemini_cli" => {
+                if let Some(cfg) = config.providers.models.gemini_cli.get(alias) {
+                    options.cli_binary_path = cfg.binary_path.clone();
                 }
             }
             _ => {}
@@ -917,145 +712,16 @@ pub async fn api_error(model_provider: &str, response: reqwest::Response) -> any
 
 /// Resolve API key for a model_provider from config and environment variables.
 ///
-/// Resolution order:
-/// 1. Explicitly provided `api_key` parameter (trimmed, filtered if empty)
-/// 2. ModelProvider-specific environment variable (e.g., `ANTHROPIC_OAUTH_TOKEN`, `OPENROUTER_API_KEY`)
-/// 3. Generic env variables (`ZEROCLAW_API_KEY`, `API_KEY`)
-///
-/// For Anthropic, the provider-specific env var is `ANTHROPIC_OAUTH_TOKEN` (for setup-tokens)
-/// followed by `ANTHROPIC_API_KEY` (for regular API keys).
-///
-/// For MiniMax, OAuth mode supports `api_key = "minimax-oauth"`, resolving credentials from
-/// `MINIMAX_OAUTH_TOKEN` first, then `MINIMAX_API_KEY`, and finally
-/// `MINIMAX_OAUTH_REFRESH_TOKEN` (automatic access-token refresh).
+/// Return the typed-alias `api_key` field, trimmed. Env-var overrides land on
+/// the field at config-load via the `ZEROCLAW_*` schema-mirror grammar.
 fn resolve_model_provider_credential(
-    name: &str,
+    _name: &str,
     credential_override: Option<&str>,
 ) -> Option<String> {
-    let mut minimax_oauth_placeholder_requested = false;
-
-    if let Some(raw_override) = credential_override {
-        let trimmed_override = raw_override.trim();
-        if !trimmed_override.is_empty() {
-            if is_minimax_alias(name) && is_minimax_oauth_placeholder(trimmed_override) {
-                minimax_oauth_placeholder_requested = true;
-                if let Some(credential) = resolve_minimax_static_credential() {
-                    return Some(credential);
-                }
-                if let Some(credential) = resolve_minimax_oauth_refresh_token(name) {
-                    return Some(credential);
-                }
-            } else if name == "anthropic" || name == "openai" || name == "groq" {
-                // For well-known model_providers, prefer provider-specific env vars over the
-                // global api_key override, since the global key may belong to a different
-                // model_provider (e.g. a custom: gateway).
-                let env_candidates: &[&str] = match name {
-                    "anthropic" => &["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-                    "openai" => &["OPENAI_API_KEY"],
-                    "groq" => &["GROQ_API_KEY"],
-                    _ => &[],
-                };
-                for env_var in env_candidates {
-                    if let Ok(val) = std::env::var(env_var) {
-                        let trimmed = val.trim().to_string();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed);
-                        }
-                    }
-                }
-                return Some(trimmed_override.to_owned());
-            } else {
-                return Some(trimmed_override.to_owned());
-            }
-        }
-    }
-
-    // Canonical family names only — legacy synonyms are collapsed by
-    // `normalize_model_provider_type` in `schema/v2.rs` before reaching the runtime.
-    let provider_env_candidates: Vec<&str> = match name {
-        "anthropic" => vec!["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-        "openrouter" => vec!["OPENROUTER_API_KEY"],
-        "openai" => vec!["OPENAI_API_KEY"],
-        "ollama" => vec!["OLLAMA_API_KEY"],
-        "venice" => vec!["VENICE_API_KEY"],
-        "groq" => vec!["GROQ_API_KEY"],
-        "mistral" => vec!["MISTRAL_API_KEY"],
-        "deepseek" => vec!["DEEPSEEK_API_KEY"],
-        "xai" => vec!["XAI_API_KEY"],
-        "together" => vec!["TOGETHER_API_KEY"],
-        "fireworks" => vec!["FIREWORKS_API_KEY"],
-        "novita" => vec!["NOVITA_API_KEY"],
-        "perplexity" => vec!["PERPLEXITY_API_KEY"],
-        "copilot" => vec!["GITHUB_TOKEN"],
-        "cohere" => vec!["COHERE_API_KEY"],
-        "moonshot" => vec!["MOONSHOT_API_KEY"],
-        "glm" => vec!["GLM_API_KEY"],
-        "minimax" => vec![MINIMAX_OAUTH_TOKEN_ENV, MINIMAX_API_KEY_ENV],
-        // Bedrock supports Bearer token auth via BEDROCK_API_KEY env var, in addition
-        // to AWS AKSK (SigV4). If BEDROCK_API_KEY is set, return it; otherwise return
-        // None and let BedrockModelProvider handle SigV4 credential resolution internally.
-        "bedrock" => {
-            if let Ok(val) = std::env::var("BEDROCK_API_KEY") {
-                let trimmed = val.trim().to_string();
-                if !trimmed.is_empty() {
-                    return Some(trimmed);
-                }
-            }
-            return None;
-        }
-        "qianfan" => vec!["QIANFAN_API_KEY"],
-        "doubao" => vec!["ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY"],
-        "qwen" => vec!["DASHSCOPE_API_KEY"],
-        "zai" => vec!["ZAI_API_KEY"],
-        "nvidia" => vec!["NVIDIA_API_KEY"],
-        "synthetic" => vec!["SYNTHETIC_API_KEY"],
-        "opencode" => vec!["OPENCODE_API_KEY"],
-        "vercel" => vec!["VERCEL_API_KEY"],
-        "cloudflare" => vec!["CLOUDFLARE_API_KEY"],
-        "ovh" => vec!["OVH_AI_ENDPOINTS_ACCESS_TOKEN"],
-        "astrai" => vec!["ASTRAI_API_KEY"],
-        "avian" => vec!["AVIAN_API_KEY"],
-        "deepmyst" => vec!["DEEPMYST_API_KEY"],
-        "llamacpp" => vec!["LLAMACPP_API_KEY"],
-        "sglang" => vec!["SGLANG_API_KEY"],
-        "vllm" => vec!["VLLM_API_KEY"],
-        "aihubmix" => vec!["AIHUBMIX_API_KEY"],
-        "siliconflow" => vec!["SILICONFLOW_API_KEY"],
-        "osaurus" => vec!["OSAURUS_API_KEY"],
-        "telnyx" => vec!["TELNYX_API_KEY"],
-        "azure" => vec!["AZURE_OPENAI_API_KEY"],
-        _ => vec![],
-    };
-
-    for env_var in provider_env_candidates {
-        if let Ok(value) = std::env::var(env_var) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-
-    if is_minimax_alias(name)
-        && let Some(credential) = resolve_minimax_oauth_refresh_token(name)
-    {
-        return Some(credential);
-    }
-
-    if minimax_oauth_placeholder_requested && is_minimax_alias(name) {
-        return None;
-    }
-
-    for env_var in ["ZEROCLAW_API_KEY", "API_KEY"] {
-        if let Ok(value) = std::env::var(env_var) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-
-    None
+    credential_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Single source of truth for `(key_prefix, canonical_model_provider_family)`
@@ -1412,16 +1078,12 @@ fn create_model_provider_with_url_and_options(
             }
             Ok(Box::new(p))
         }
-        // Ollama uses api_url for custom base URL (e.g. remote Ollama instance)
-        "ollama" => {
-            let env_url = std::env::var("ZEROCLAW_PROVIDER_URL").ok();
-            let api_url = env_url.as_deref().or(resolved_url);
-            Ok(Box::new(ollama::OllamaModelProvider::new_with_reasoning(
-                api_url,
-                key,
-                options.reasoning_enabled,
-            )))
-        }
+        // Ollama: base URL flows through `provider_api_url` (typed alias's `uri`).
+        "ollama" => Ok(Box::new(ollama::OllamaModelProvider::new_with_reasoning(
+            resolved_url,
+            key,
+            options.reasoning_enabled,
+        ))),
         "gemini" => {
             let state_dir = options.zeroclaw_dir.clone().unwrap_or_else(|| {
                 directories::UserDirs::new().map_or_else(
@@ -1664,8 +1326,12 @@ fn create_model_provider_with_url_and_options(
             AuthStyle::Bearer,
         ))),
         "copilot" => Ok(Box::new(copilot::CopilotModelProvider::new(key))),
-        "gemini_cli" => Ok(Box::new(gemini_cli::GeminiCliModelProvider::new())),
-        "kilocli" => Ok(Box::new(kilocli::KiloCliModelProvider::new())),
+        "gemini_cli" => Ok(Box::new(gemini_cli::GeminiCliModelProvider::new(
+            options.cli_binary_path.as_deref(),
+        ))),
+        "kilocli" => Ok(Box::new(kilocli::KiloCliModelProvider::new(
+            options.cli_binary_path.as_deref(),
+        ))),
         "lmstudio" => {
             let lm_studio_key = key
                 .map(str::trim)
@@ -2443,113 +2109,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_provider_credential_prefers_explicit_argument() {
+    fn resolve_provider_credential_returns_trimmed_override() {
         let resolved = resolve_model_provider_credential("openrouter", Some("  explicit-key  "));
         assert_eq!(resolved, Some("explicit-key".to_string()));
     }
 
     #[test]
-    fn resolve_provider_credential_uses_minimax_oauth_env_for_placeholder() {
-        let _env_lock = env_lock();
-        let _oauth_guard = EnvGuard::set(MINIMAX_OAUTH_TOKEN_ENV, Some("oauth-token"));
-        let _api_guard = EnvGuard::set(MINIMAX_API_KEY_ENV, Some("api-key"));
-        let _refresh_guard = EnvGuard::set(MINIMAX_OAUTH_REFRESH_TOKEN_ENV, None);
-
-        let resolved =
-            resolve_model_provider_credential("minimax", Some(MINIMAX_OAUTH_PLACEHOLDER));
-
-        assert_eq!(resolved.as_deref(), Some("oauth-token"));
+    fn resolve_provider_credential_filters_empty_override() {
+        assert!(resolve_model_provider_credential("openrouter", Some("   ")).is_none());
+        assert!(resolve_model_provider_credential("openrouter", None).is_none());
     }
 
-    #[test]
-    fn resolve_provider_credential_falls_back_to_minimax_api_key_for_placeholder() {
-        let _env_lock = env_lock();
-        let _oauth_guard = EnvGuard::set(MINIMAX_OAUTH_TOKEN_ENV, None);
-        let _api_guard = EnvGuard::set(MINIMAX_API_KEY_ENV, Some("api-key"));
-        let _refresh_guard = EnvGuard::set(MINIMAX_OAUTH_REFRESH_TOKEN_ENV, None);
-
-        let resolved =
-            resolve_model_provider_credential("minimax", Some(MINIMAX_OAUTH_PLACEHOLDER));
-
-        assert_eq!(resolved.as_deref(), Some("api-key"));
-    }
-
-    #[test]
-    fn resolve_provider_credential_placeholder_ignores_generic_api_key_fallback() {
-        let _env_lock = env_lock();
-        let _oauth_guard = EnvGuard::set(MINIMAX_OAUTH_TOKEN_ENV, None);
-        let _api_guard = EnvGuard::set(MINIMAX_API_KEY_ENV, None);
-        let _refresh_guard = EnvGuard::set(MINIMAX_OAUTH_REFRESH_TOKEN_ENV, None);
-        let _generic_guard = EnvGuard::set("API_KEY", Some("generic-key"));
-
-        let resolved =
-            resolve_model_provider_credential("minimax", Some(MINIMAX_OAUTH_PLACEHOLDER));
-
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn resolve_provider_credential_bedrock_uses_internal_credential_path() {
-        let _env_lock = env_lock();
-        let _generic_guard = EnvGuard::set("API_KEY", Some("generic-key"));
-        let _override_guard = EnvGuard::set("OPENROUTER_API_KEY", Some("openrouter-key"));
-        let _bedrock_guard = EnvGuard::set("BEDROCK_API_KEY", None);
-
-        assert_eq!(
-            resolve_model_provider_credential("bedrock", Some("explicit")),
-            Some("explicit".to_string())
-        );
-        assert!(resolve_model_provider_credential("bedrock", None).is_none());
-    }
-
-    #[test]
-    fn resolve_provider_credential_bedrock_returns_bearer_token_from_env() {
-        let _env_lock = env_lock();
-        let _bedrock_guard = EnvGuard::set("BEDROCK_API_KEY", Some("bedrock-bearer-token"));
-
-        assert_eq!(
-            resolve_model_provider_credential("bedrock", None),
-            Some("bedrock-bearer-token".to_string())
-        );
-    }
+    // V0.8.0: tests that exercised env-var-driven credential resolution and
+    // OAuth env-var fallbacks (`MINIMAX_*`, `QWEN_OAUTH_*`, `ANTHROPIC_API_KEY`,
+    // `BEDROCK_API_KEY`, `API_KEY`, etc.) were deleted alongside the env-var
+    // match in `resolve_model_provider_credential`. See the comment above
+    // that fn for the schema-mirror replacement grammar.
 
     #[test]
     fn resolve_qwen_oauth_context_prefers_explicit_override() {
         let _env_lock = env_lock();
-        let fake_home = format!("/tmp/zeroclaw-qwen-oauth-home-{}", std::process::id());
-        let _home_guard = EnvGuard::set("HOME", Some(fake_home.as_str()));
-        let _token_guard = EnvGuard::set(QWEN_OAUTH_TOKEN_ENV, Some("oauth-token"));
-        let _resource_guard = EnvGuard::set(
-            QWEN_OAUTH_RESOURCE_URL_ENV,
-            Some("coding-intl.dashscope.aliyuncs.com"),
-        );
-
         let context = resolve_qwen_oauth_context(Some("  explicit-qwen-token  "));
-
         assert_eq!(context.credential.as_deref(), Some("explicit-qwen-token"));
         assert!(context.base_url.is_none());
-    }
-
-    #[test]
-    fn resolve_qwen_oauth_context_uses_env_token_and_resource_url() {
-        let _env_lock = env_lock();
-        let fake_home = format!("/tmp/zeroclaw-qwen-oauth-home-{}-env", std::process::id());
-        let _home_guard = EnvGuard::set("HOME", Some(fake_home.as_str()));
-        let _token_guard = EnvGuard::set(QWEN_OAUTH_TOKEN_ENV, Some("oauth-token"));
-        let _refresh_guard = EnvGuard::set(QWEN_OAUTH_REFRESH_TOKEN_ENV, None);
-        let _resource_guard = EnvGuard::set(
-            QWEN_OAUTH_RESOURCE_URL_ENV,
-            Some("coding-intl.dashscope.aliyuncs.com"),
-        );
-        let _dashscope_guard = EnvGuard::set("DASHSCOPE_API_KEY", Some("dashscope-fallback"));
-
-        let context = resolve_qwen_oauth_context(Some(QWEN_OAUTH_PLACEHOLDER));
-
-        assert_eq!(context.credential.as_deref(), Some("oauth-token"));
-        assert_eq!(
-            context.base_url.as_deref(),
-            Some("https://coding-intl.dashscope.aliyuncs.com/v1")
-        );
     }
 
     #[test]
@@ -2566,10 +2148,6 @@ mod tests {
         .unwrap();
 
         let _home_guard = EnvGuard::set("HOME", Some(fake_home.as_str()));
-        let _token_guard = EnvGuard::set(QWEN_OAUTH_TOKEN_ENV, None);
-        let _refresh_guard = EnvGuard::set(QWEN_OAUTH_REFRESH_TOKEN_ENV, None);
-        let _resource_guard = EnvGuard::set(QWEN_OAUTH_RESOURCE_URL_ENV, None);
-        let _dashscope_guard = EnvGuard::set("DASHSCOPE_API_KEY", None);
 
         let context = resolve_qwen_oauth_context(Some(QWEN_OAUTH_PLACEHOLDER));
 
@@ -2581,20 +2159,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_qwen_oauth_context_placeholder_does_not_use_dashscope_fallback() {
+    fn resolve_qwen_oauth_context_returns_none_without_cache() {
         let _env_lock = env_lock();
-        let fake_home = format!(
-            "/tmp/zeroclaw-qwen-oauth-home-{}-placeholder",
-            std::process::id()
-        );
+        let fake_home = format!("/tmp/zeroclaw-qwen-oauth-home-{}-empty", std::process::id());
         let _home_guard = EnvGuard::set("HOME", Some(fake_home.as_str()));
-        let _token_guard = EnvGuard::set(QWEN_OAUTH_TOKEN_ENV, None);
-        let _refresh_guard = EnvGuard::set(QWEN_OAUTH_REFRESH_TOKEN_ENV, None);
-        let _resource_guard = EnvGuard::set(QWEN_OAUTH_RESOURCE_URL_ENV, None);
-        let _dashscope_guard = EnvGuard::set("DASHSCOPE_API_KEY", Some("dashscope-fallback"));
 
         let context = resolve_qwen_oauth_context(Some(QWEN_OAUTH_PLACEHOLDER));
-
         assert!(context.credential.is_none());
     }
 
@@ -2742,17 +2312,6 @@ mod tests {
     fn factory_opencode_go() {}
 
     #[test]
-    fn resolve_model_provider_credential_opencode_env() {
-        let _env_lock = env_lock();
-        let _provider_guard = EnvGuard::set("OPENCODE_API_KEY", Some("opencode-test-key"));
-        let _generic_guard = EnvGuard::set("API_KEY", None);
-        let _zeroclaw_guard = EnvGuard::set("ZEROCLAW_API_KEY", None);
-
-        let resolved = resolve_model_provider_credential("opencode", None);
-        assert_eq!(resolved.as_deref(), Some("opencode-test-key"));
-    }
-
-    #[test]
     fn factory_zai() {
         assert!(create_model_provider("zai", Some("key")).is_ok());
     }
@@ -2859,40 +2418,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_provider_credential_osaurus_env() {
-        let _env_lock = env_lock();
-        let _guard = EnvGuard::set("OSAURUS_API_KEY", Some("osaurus-test-key"));
-        let resolved = resolve_model_provider_credential("osaurus", None);
-        assert_eq!(resolved, Some("osaurus-test-key".to_string()));
-    }
+    fn resolve_provider_credential_osaurus_env_deleted() {}
 
     #[test]
-    fn resolve_provider_credential_doubao_volcengine_env() {
-        // VOLCENGINE_API_KEY is one of the env-var candidates the canonical
-        // `doubao` family checks (alongside ARK_API_KEY / DOUBAO_API_KEY).
-        // The legacy "volcengine" type-string is no longer accepted by the
-        // runtime; migration normalizes it to the canonical doubao family.
-        let _env_lock = env_lock();
-        let _guard = EnvGuard::set("VOLCENGINE_API_KEY", Some("volc-test-key"));
-        let resolved = resolve_model_provider_credential("doubao", None);
-        assert_eq!(resolved, Some("volc-test-key".to_string()));
-    }
+    fn resolve_provider_credential_doubao_volcengine_env_deleted() {}
 
     #[test]
-    fn resolve_provider_credential_aihubmix_env() {
-        let _env_lock = env_lock();
-        let _guard = EnvGuard::set("AIHUBMIX_API_KEY", Some("aihubmix-test-key"));
-        let resolved = resolve_model_provider_credential("aihubmix", None);
-        assert_eq!(resolved, Some("aihubmix-test-key".to_string()));
-    }
+    fn resolve_provider_credential_aihubmix_env_deleted() {}
 
     #[test]
-    fn resolve_provider_credential_siliconflow_env() {
-        let _env_lock = env_lock();
-        let _guard = EnvGuard::set("SILICONFLOW_API_KEY", Some("sf-test-key"));
-        let resolved = resolve_model_provider_credential("siliconflow", None);
-        assert_eq!(resolved, Some("sf-test-key".to_string()));
-    }
+    fn resolve_provider_credential_siliconflow_env_deleted() {}
 
     #[test]
     fn factory_aihubmix() {
@@ -3085,12 +2620,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_provider_credential_deepmyst_env() {
-        let _env_lock = env_lock();
-        let _guard = EnvGuard::set("DEEPMYST_API_KEY", Some("dm-test-key"));
-        let resolved = resolve_model_provider_credential("deepmyst", None);
-        assert_eq!(resolved, Some("dm-test-key".to_string()));
-    }
+    fn resolve_provider_credential_deepmyst_env_deleted() {}
 
     // ── Custom / BYOP model model_provider ─────────────────────────
     //
@@ -3451,23 +2981,18 @@ mod tests {
     }
 
     #[test]
-    fn env_provider_url_overrides_api_url() {
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var("ZEROCLAW_PROVIDER_URL", "http://env-ollama:11434") };
-
+    fn ollama_uses_resolved_url_from_runtime_options() {
+        // V0.8.0: `ZEROCLAW_PROVIDER_URL` env-var override eradicated. Ollama
+        // base URL flows through the typed alias's `api_url`/`uri` field which
+        // pre-populates `provider_api_url` on `ModelProviderRuntimeOptions`.
         let options = ModelProviderRuntimeOptions::default();
-
         let model_provider = create_model_provider_with_url_and_options(
             "ollama",
             Some("http://config-ollama:11434"),
             None,
             &options,
         );
-
         assert!(model_provider.is_ok());
-
-        // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var("ZEROCLAW_PROVIDER_URL") };
     }
 
     // ── Per-alias provider_runtime_options resolution (#6266 review) ──

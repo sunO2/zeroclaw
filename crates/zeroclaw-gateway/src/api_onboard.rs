@@ -924,23 +924,23 @@ mod tests {
         let mut cfg = empty_cfg();
         assert!(cfg.channels.matrix.is_empty(), "fresh config: matrix unset");
 
-        cfg.create_map_key("channels.matrix", "my-matrix-alias")
+        cfg.create_map_key("channels.matrix", "mymatrixalias")
             .expect("create_map_key must succeed for channels.matrix");
         assert!(
-            cfg.channels.matrix.contains_key("my-matrix-alias"),
+            cfg.channels.matrix.contains_key("mymatrixalias"),
             "channels.matrix must have alias after create_map_key",
         );
 
         // The form would issue a PATCH whose set_prop call hits this path.
         cfg.set_prop(
-            "channels.matrix.my-matrix-alias.allowed-rooms",
+            "channels.matrix.mymatrixalias.allowed-rooms",
             r#"["alice","bob"]"#,
         )
         .expect("set_prop on initialized matrix subsection must succeed");
         assert_eq!(
             cfg.channels
                 .matrix
-                .get("my-matrix-alias")
+                .get("mymatrixalias")
                 .unwrap()
                 .allowed_rooms,
             vec!["alice".to_string(), "bob".to_string()],
@@ -1044,7 +1044,7 @@ mod tests {
     #[test]
     fn channels_picker_marks_configured_after_create_map_key() {
         let mut cfg = empty_cfg();
-        cfg.create_map_key("channels.matrix", "my-matrix-alias")
+        cfg.create_map_key("channels.matrix", "mymatrixalias")
             .expect("create_map_key must succeed for channels.matrix");
         let items = schema_walk_picker(&cfg, "channels");
         let matrix = items.iter().find(|i| i.key == "matrix").unwrap();

@@ -423,11 +423,6 @@ async fn handle_webhook(
 // ---------------------------------------------------------------------------
 
 impl LineChannel {
-    /// Create a new `LineChannel`.
-    ///
-    /// `channel_access_token` and `channel_secret` fall back to the
-    /// `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` environment
-    /// variables respectively when the config value is empty.
     pub fn new(
         channel_access_token: String,
         channel_secret: String,
@@ -436,16 +431,8 @@ impl LineChannel {
         allowed_users: Vec<String>,
         webhook_port: u16,
     ) -> Self {
-        let token = if channel_access_token.is_empty() {
-            std::env::var("LINE_CHANNEL_ACCESS_TOKEN").unwrap_or_default()
-        } else {
-            channel_access_token
-        };
-        let secret = if channel_secret.is_empty() {
-            std::env::var("LINE_CHANNEL_SECRET").unwrap_or_default()
-        } else {
-            channel_secret
-        };
+        let token = channel_access_token;
+        let secret = channel_secret;
 
         let pairing = if dm_policy == LineDmPolicy::Pairing && allowed_users.is_empty() {
             let guard = PairingGuard::new(true, &[]);

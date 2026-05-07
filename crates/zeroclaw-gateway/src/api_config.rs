@@ -155,6 +155,12 @@ pub struct ListEntry {
     pub value: Option<serde_json::Value>,
     pub populated: bool,
     pub is_secret: bool,
+    /// Whether this field was populated by a `ZEROCLAW_*` env-var override
+    /// at load time. The dashboard renders the 💉 badge and a persistent
+    /// warning *"Edits here won't take effect — overridden by ZEROCLAW_..."*
+    /// when this is `true`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_env_overridden: bool,
     /// Variants for `enum`-kind fields — non-empty means the frontend should
     /// render a `<select>` with these options. Empty for non-enum fields.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -606,6 +612,7 @@ pub async fn handle_list(
             };
             let section = Section::from_path(&info.name).and_then(Section::as_path_prefix);
             let enum_variants = info.enum_variants.map(|f| f()).unwrap_or_default();
+            let is_env_overridden = config.prop_is_env_overridden(&info.name);
             ListEntry {
                 path: info.name,
                 category: info.category.to_string(),
@@ -614,6 +621,7 @@ pub async fn handle_list(
                 value,
                 populated,
                 is_secret: is_sensitive,
+                is_env_overridden,
                 enum_variants,
                 onboard_section: section,
             }
@@ -1889,6 +1897,7 @@ mod tests {
             value: None,
             populated: true,
             is_secret: true,
+            is_env_overridden: false,
             enum_variants: vec![],
             onboard_section: Some("model_providers"),
         };
