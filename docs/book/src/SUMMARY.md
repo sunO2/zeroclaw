@@ -22,6 +22,7 @@
 - [Overview](./architecture/overview.md)
 - [Request lifecycle](./architecture/request-lifecycle.md)
 - [Crates](./architecture/crates.md)
+- [Multi-agent runtime](./architecture/multi-agent.md)
 
 # Reference
 
@@ -118,6 +119,7 @@
 - [Privacy & PII discipline](./contributing/privacy.md)
 - [Testing](./contributing/testing.md)
 - [PR review protocol](./contributing/pr-review-protocol.md)
+- [Multi-agent setup](./contributing/multi-agent-setup.md)
 - [Contributor License Agreement](./contributing/cla.md)
 
 # Maintainers
