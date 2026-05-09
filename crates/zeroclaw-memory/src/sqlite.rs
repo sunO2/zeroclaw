@@ -5,7 +5,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chrono::Local;
 use parking_lot::Mutex;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,6 +65,7 @@ impl SqliteMemory {
              PRAGMA temp_store   = MEMORY;",
         )?;
         Self::init_schema(&conn)?;
+        Self::migrate_v0_8_0_multi_agent(&db_path, &conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path,
@@ -113,6 +114,7 @@ impl SqliteMemory {
         )?;
 
         Self::init_schema(&conn)?;
+        Self::migrate_v0_8_0_multi_agent(&db_path, &conn)?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -233,6 +235,136 @@ impl SqliteMemory {
             conn.execute_batch("ALTER TABLE memories ADD COLUMN superseded_by TEXT;")?;
         }
 
+        Ok(())
+    }
+
+    /// v0.8.0 multi-agent DB migration (#6272 P6).
+    ///
+    /// Adds the `agents` table, the `agent_id` column on `memories`, and
+    /// backfills existing rows to a synthesized `default` agent. All
+    /// steps are idempotent: re-running on an already-migrated DB is a
+    /// no-op. Before the destructive step (the `ALTER TABLE memories`)
+    /// we take an atomic copy of the SQLite file when there are
+    /// existing rows that would be touched, so a crashed migration is
+    /// recoverable.
+    ///
+    /// `agent_id` is left nullable at the SQLite layer because SQLite
+    /// cannot add a NOT NULL FK column to an existing populated table
+    /// without a full table rebuild. The application layer enforces
+    /// non-null at write time via `AgentScopedMemory<M>` (P7), which
+    /// holds the bound agent's UUID and injects it on every store.
+    fn migrate_v0_8_0_multi_agent(db_path: &Path, conn: &Connection) -> anyhow::Result<()> {
+        if Self::memories_has_agent_id_column(conn)? {
+            return Ok(());
+        }
+
+        // Memory rows that pre-date the migration get backfilled below;
+        // backup the file first so a crashed migration is recoverable.
+        // Skip when the memories table is empty (or absent on a fresh
+        // install) since there's nothing to lose.
+        if Self::memories_row_count(conn)? > 0 && db_path.exists() {
+            Self::backup_for_multi_agent_migration(db_path)?;
+        }
+
+        // 1. Create the agents table. The schema mirrors the plan
+        //    in tmp/6272-multi-agent-plan.md: UUID primary key, alias
+        //    column UNIQUE for human reference and rename surface, and
+        //    a created_at timestamp for audit.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agents (
+                id          TEXT PRIMARY KEY,
+                alias       TEXT NOT NULL UNIQUE,
+                created_at  TEXT NOT NULL
+             );",
+        )?;
+
+        // 2. Synthesize the `default` agent's row if it is missing.
+        //    Returns the UUID so the backfill can populate existing
+        //    memory rows without a sub-select on every UPDATE.
+        let default_uuid = Self::ensure_default_agent_uuid(conn)?;
+
+        // 3. ALTER TABLE memories ADD COLUMN agent_id, then backfill
+        //    every existing row to the default agent. The column stays
+        //    nullable at the DB layer (see doc-comment above); the
+        //    AgentScopedMemory<M> wrapper enforces non-null at write
+        //    time in P7.
+        conn.execute_batch(
+            "ALTER TABLE memories ADD COLUMN agent_id TEXT;
+             CREATE INDEX IF NOT EXISTS idx_memories_agent_id ON memories(agent_id);",
+        )?;
+        conn.execute(
+            "UPDATE memories SET agent_id = ?1 WHERE agent_id IS NULL",
+            params![default_uuid],
+        )?;
+
+        Ok(())
+    }
+
+    fn memories_has_agent_id_column(conn: &Connection) -> anyhow::Result<bool> {
+        let schema_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories' LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(schema_sql.is_some_and(|sql| sql.contains("agent_id")))
+    }
+
+    fn memories_row_count(conn: &Connection) -> anyhow::Result<i64> {
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories' LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !table_exists {
+            return Ok(0);
+        }
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    fn ensure_default_agent_uuid(conn: &Connection) -> anyhow::Result<String> {
+        let new_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR IGNORE INTO agents (id, alias, created_at) VALUES (?1, 'default', ?2)",
+            params![new_id, now],
+        )?;
+        // Re-query so we return the row that actually persisted, not
+        // the candidate we just tried to insert (which may have lost
+        // to an existing entry on a re-run).
+        let final_id: String = conn.query_row(
+            "SELECT id FROM agents WHERE alias = 'default' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(final_id)
+    }
+
+    fn backup_for_multi_agent_migration(db_path: &Path) -> anyhow::Result<()> {
+        let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+        let backup_path = db_path.with_file_name(format!(
+            "{}.backup-{timestamp}",
+            db_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "brain.db".to_string()),
+        ));
+        std::fs::copy(db_path, &backup_path).with_context(|| {
+            format!(
+                "failed to copy {} to {} before v0.8.0 multi-agent migration",
+                db_path.display(),
+                backup_path.display(),
+            )
+        })?;
+        tracing::info!(
+            backup = %backup_path.display(),
+            "v0.8.0 multi-agent migration: backed up SQLite memory DB before adding agents table and agent_id column"
+        );
         Ok(())
     }
 
