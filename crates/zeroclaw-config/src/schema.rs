@@ -2811,6 +2811,39 @@ impl Config {
             .map(|(alias, _)| alias.as_str())
     }
 
+    /// Resolve the per-agent workspace directory for `alias`.
+    ///
+    /// Returns the agent's `[agents.<alias>.workspace.path]` override
+    /// when set (operator-explicit, e.g. for putting a workspace on a
+    /// different disk), otherwise derives
+    /// `<install>/agents/<alias>/workspace/` from the install root
+    /// (the directory containing `config.toml`).
+    ///
+    /// v0.8.0 ships per-agent workspaces under
+    /// `<install>/agents/<alias>/workspace/`; the legacy
+    /// `<install>/workspace/` is migrated into the default agent's
+    /// slot once at v0.7.x→v0.8.0 upgrade. Per-agent code paths
+    /// (identity-file load, `SecurityPolicy::for_agent`, the memory
+    /// factory) consult this method rather than `config.workspace_dir`,
+    /// which stays as the install's legacy primary workspace anchor.
+    #[must_use]
+    pub fn agent_workspace_dir(&self, agent_alias: &str) -> std::path::PathBuf {
+        if let Some(cfg) = self.agents.get(agent_alias)
+            && let Some(custom) = cfg.workspace.path.as_ref()
+        {
+            return custom.clone();
+        }
+        let install_root = self
+            .config_path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        install_root
+            .join("agents")
+            .join(agent_alias)
+            .join("workspace")
+    }
+
     /// Resolve an aliased-agent config by alias. `None` when the alias
     /// isn't configured; callers should treat this as a config error
     /// rather than synthesizing a default.
@@ -12277,7 +12310,7 @@ fn normalize_wire_api(raw: &str) -> Option<&'static str> {
 /// When the workspace is created outside of `zeroclaw onboard` (e.g., non-tty
 /// daemon/cron sessions), these files would otherwise be missing. This function
 /// creates sensible defaults that allow the agent to operate with a basic identity.
-async fn ensure_bootstrap_files(workspace_dir: &Path) -> Result<()> {
+pub async fn ensure_bootstrap_files(workspace_dir: &Path) -> Result<()> {
     let defaults: &[(&str, &str)] = &[
         (
             "IDENTITY.md",

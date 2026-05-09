@@ -492,9 +492,26 @@ impl Agent {
             Arc::from(observability::create_observer(&config.observability));
         let runtime: Arc<dyn platform::RuntimeAdapter> =
             Arc::from(platform::create_runtime(&config.runtime)?);
+        // Per-agent workspace becomes the SecurityPolicy boundary
+        // (file_read/write/edit + shell tool jail to the agent's own
+        // dir). The session-cwd override still wins so ACP sessions
+        // can pin tool path resolution to an IDE-provided cwd.
+        let agent_workspace = config.agent_workspace_dir(agent_alias);
+        // Seed the agent's bootstrap files (AGENTS.md / SOUL.md /
+        // IDENTITY.md / USER.md / TOOLS.md / BOOTSTRAP.md) on first
+        // run. Idempotent — never overwrites existing files; only
+        // fills in the gaps so a freshly-created agent has a basic
+        // identity to load.
+        if let Err(e) = zeroclaw_config::schema::ensure_bootstrap_files(&agent_workspace).await {
+            tracing::warn!(
+                agent = %agent_alias,
+                workspace = %agent_workspace.display(),
+                "Failed to ensure per-agent bootstrap files (continuing with whatever exists): {e}"
+            );
+        }
         let security = Arc::new(SecurityPolicy::from_risk_profile(
             risk_profile,
-            session_cwd.unwrap_or(&config.workspace_dir),
+            session_cwd.unwrap_or(&agent_workspace),
         ));
 
         let primary_model_provider = config.providers.first_model_provider();

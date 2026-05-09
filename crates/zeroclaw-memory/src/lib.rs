@@ -477,37 +477,6 @@ pub fn create_memory_for_migration(
     )
 }
 
-/// Resolve the per-agent workspace directory for `alias` from the
-/// configured agent's `[agents.<alias>.workspace.path]` override, or
-/// derive `<install>/agents/<alias>/workspace/` from the install root
-/// (the directory containing `config.toml`).
-///
-/// v0.8.0 ships per-agent workspaces under
-/// `<install>/agents/<alias>/workspace/`; the legacy
-/// `<install>/workspace/` is migrated into the default agent's slot
-/// at first init. Markdown agents store their `MEMORY.md` and daily
-/// logs here directly; SQL agents share a single install-wide store
-/// (the agent_id column distinguishes rows) but their other on-disk
-/// state (identity files, scheduled-task DBs) still lives in this
-/// per-agent dir.
-#[must_use]
-pub fn agent_workspace_dir(
-    config: &zeroclaw_config::schema::Config,
-    alias: &str,
-) -> std::path::PathBuf {
-    if let Some(cfg) = config.agents.get(alias)
-        && let Some(custom) = cfg.workspace.path.as_ref()
-    {
-        return custom.clone();
-    }
-    let install_root = config
-        .config_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    install_root.join("agents").join(alias).join("workspace")
-}
-
 /// Build the per-agent memory wrapper for `agent_alias`.
 ///
 /// Wraps the appropriate inner backend with `AgentScopedMemory` (for
@@ -538,12 +507,12 @@ pub async fn create_memory_for_agent(
     // Markdown branch: the wrapper composes per-agent dirs, not a
     // shared backend. Skip the inner-backend factory entirely.
     if matches!(backend_kind, ConfigBackend::Markdown) {
-        let own_workspace = agent_workspace_dir(config, agent_alias);
+        let own_workspace = config.agent_workspace_dir(agent_alias);
         let own = MarkdownMemory::new(&own_workspace);
         let mut peers: Vec<agent_scoped_markdown::MarkdownPeer> = Vec::new();
         for peer in &agent_cfg.workspace.read_memory_from {
             let peer_alias = peer.as_str();
-            let peer_workspace = agent_workspace_dir(config, peer_alias);
+            let peer_workspace = config.agent_workspace_dir(peer_alias);
             peers.push(agent_scoped_markdown::MarkdownPeer {
                 alias: peer_alias.to_string(),
                 memory: MarkdownMemory::new(&peer_workspace),

@@ -1833,7 +1833,11 @@ impl SecurityPolicy {
                 "agents.{agent_alias} has no resolvable risk_profile (load-time validation should have caught this)"
             )
         })?;
-        Ok(Self::from_risk_profile(risk_profile, &config.workspace_dir))
+        // Per-agent workspace becomes the SecurityPolicy boundary so
+        // file_read/write/edit and the shell tool jail to the agent's
+        // own dir, not the install-wide legacy path.
+        let agent_workspace = config.agent_workspace_dir(agent_alias);
+        Ok(Self::from_risk_profile(risk_profile, &agent_workspace))
     }
 
     /// Render a human-readable summary of the active security constraints
