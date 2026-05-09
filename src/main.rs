@@ -655,6 +655,15 @@ Examples:
         migrate_command: MigrateCommands,
     },
 
+    /// Create, list, or delete configured agents (`[agents.<alias>]` blocks).
+    ///
+    /// `zeroclaw agent` (singular) RUNS an agent; `zeroclaw agents` (plural)
+    /// manages the set of configured agents on this install.
+    Agents {
+        #[command(subcommand)]
+        agents_command: AgentsCommands,
+    },
+
     /// Manage model_provider subscription authentication profiles
     Auth {
         #[command(subcommand)]
@@ -1069,6 +1078,55 @@ enum EstopSubcommands {
         #[arg(long)]
         otp: Option<String>,
     },
+}
+
+/// Subcommands for `zeroclaw agents` (#6272).
+///
+/// `zeroclaw agent` (singular) RUNS an agent; `zeroclaw agents` (plural)
+/// manages the set of configured agents on this install. Three operations
+/// land in v0.8.0:
+///
+/// - `agents create <alias>` — write a new `[agents.<alias>]` block, create
+///   `<install>/agents/<alias>/workspace/`, seed the bootstrap files. Refuses
+///   if the alias is already configured.
+/// - `agents delete <alias>` — interactive confirm (or `--yes`), removes the
+///   agent's workspace dir, drops the `[agents.<alias>]` config block, and
+///   strips the alias from any peer-group memberships. `--dry-run` prints
+///   the impact set without touching anything.
+/// - `agents list` — prints the configured aliases plus the channels each
+///   handles.
+#[derive(Subcommand, Debug)]
+enum AgentsCommands {
+    /// Create a new agent. Writes `[agents.<alias>]`, creates the agent's
+    /// workspace dir, and seeds bootstrap identity files.
+    Create {
+        /// Alias for the new agent (must match `[a-z0-9][a-z0-9_-]{0,30}`).
+        alias: String,
+        /// Risk-profile alias to bind. Required — there is no global default.
+        #[arg(long)]
+        risk_profile: String,
+        /// Optional model-provider dotted alias (e.g. `openrouter.default`).
+        #[arg(long)]
+        model_provider: Option<String>,
+        /// Optional memory-backend kind (`sqlite`, `markdown`, `lucid`,
+        /// `postgres`, `qdrant`, `none`). Defaults to `sqlite`.
+        #[arg(long)]
+        memory_backend: Option<String>,
+    },
+    /// Delete an agent. Removes the workspace dir, drops the config block,
+    /// and strips the alias from any peer-group memberships.
+    Delete {
+        /// Alias of the agent to delete.
+        alias: String,
+        /// Skip the interactive confirm prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Print the impact set without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List configured agents.
+    List,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2255,6 +2313,10 @@ async fn main() -> Result<()> {
 
         Commands::Migrate { migrate_command } => {
             migration::handle_command(migrate_command, &config).await
+        }
+
+        Commands::Agents { agents_command } => {
+            Box::pin(handle_agents_command(agents_command, config)).await
         }
 
         Commands::Memory { memory_command } => {
@@ -3529,6 +3591,196 @@ fn format_expiry(profile: &auth::profiles::AuthProfile) -> String {
             }
         }
         None => "n/a".to_string(),
+    }
+}
+
+/// Dispatcher for `zeroclaw agents <subcommand>` (#6272).
+async fn handle_agents_command(cmd: AgentsCommands, mut config: Config) -> Result<()> {
+    match cmd {
+        AgentsCommands::Create {
+            alias,
+            risk_profile,
+            model_provider,
+            memory_backend,
+        } => {
+            agents_create(
+                &mut config,
+                alias,
+                risk_profile,
+                model_provider,
+                memory_backend,
+            )
+            .await
+        }
+        AgentsCommands::Delete {
+            alias,
+            yes,
+            dry_run,
+        } => agents_delete(&mut config, alias, yes, dry_run).await,
+        AgentsCommands::List => {
+            agents_list(&config);
+            Ok(())
+        }
+    }
+}
+
+async fn agents_create(
+    config: &mut Config,
+    alias: String,
+    risk_profile: String,
+    model_provider: Option<String>,
+    memory_backend: Option<String>,
+) -> Result<()> {
+    if config.agents.contains_key(&alias) {
+        bail!("agent {alias:?} already exists; refusing to overwrite");
+    }
+    if !config.risk_profiles.contains_key(&risk_profile) {
+        bail!(
+            "risk_profile {risk_profile:?} is not configured; create it under \
+             [risk_profiles.<alias>] before binding it to an agent"
+        );
+    }
+
+    let mut agent = zeroclaw_config::schema::AliasedAgentConfig {
+        risk_profile: risk_profile.clone(),
+        ..zeroclaw_config::schema::AliasedAgentConfig::default()
+    };
+    if let Some(provider) = model_provider {
+        agent.model_provider = provider.into();
+    }
+    if let Some(backend_name) = memory_backend {
+        let backend = match backend_name.as_str() {
+            "sqlite" => zeroclaw_config::multi_agent::MemoryBackendKind::Sqlite,
+            "postgres" => zeroclaw_config::multi_agent::MemoryBackendKind::Postgres,
+            "qdrant" => zeroclaw_config::multi_agent::MemoryBackendKind::Qdrant,
+            "markdown" => zeroclaw_config::multi_agent::MemoryBackendKind::Markdown,
+            "lucid" => zeroclaw_config::multi_agent::MemoryBackendKind::Lucid,
+            "none" => zeroclaw_config::multi_agent::MemoryBackendKind::None,
+            other => bail!(
+                "unknown memory backend {other:?}; one of \
+                 sqlite/postgres/qdrant/markdown/lucid/none"
+            ),
+        };
+        agent.memory.backend = backend;
+    }
+
+    let workspace_dir = config.agent_workspace_dir(&alias);
+    tokio::fs::create_dir_all(&workspace_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create per-agent workspace at {}",
+                workspace_dir.display()
+            )
+        })?;
+    zeroclaw_config::schema::ensure_bootstrap_files(&workspace_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to seed bootstrap identity files in {}",
+                workspace_dir.display()
+            )
+        })?;
+
+    config.agents.insert(alias.clone(), agent);
+    config.save().await.context("failed to save config")?;
+
+    println!(
+        "Created agent {alias:?} with risk_profile {risk_profile:?} at {}",
+        workspace_dir.display()
+    );
+    Ok(())
+}
+
+async fn agents_delete(config: &mut Config, alias: String, yes: bool, dry_run: bool) -> Result<()> {
+    if !config.agents.contains_key(&alias) {
+        bail!("agent {alias:?} is not configured");
+    }
+    let workspace_dir = config.agent_workspace_dir(&alias);
+    let peer_group_memberships: Vec<String> = config
+        .peer_groups
+        .iter()
+        .filter(|(_, group)| group.agents.iter().any(|a| a.as_str() == alias))
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    println!("Impact:");
+    println!("  Drop [agents.{alias}] config block");
+    println!("  Remove workspace dir {}", workspace_dir.display());
+    if peer_group_memberships.is_empty() {
+        println!("  No peer-group memberships to strip");
+    } else {
+        println!(
+            "  Strip alias from {} peer group(s): {}",
+            peer_group_memberships.len(),
+            peer_group_memberships.join(", ")
+        );
+    }
+
+    if dry_run {
+        println!("--dry-run: no changes made");
+        return Ok(());
+    }
+    if !yes {
+        eprint!("Confirm deletion of agent {alias:?}? [y/N] ");
+        std::io::Write::flush(&mut std::io::stderr()).ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    config.agents.remove(&alias);
+    for group_name in &peer_group_memberships {
+        if let Some(group) = config.peer_groups.get_mut(group_name) {
+            group.agents.retain(|a| a.as_str() != alias);
+        }
+    }
+    config.save().await.context("failed to save config")?;
+
+    if workspace_dir.exists() {
+        tokio::fs::remove_dir_all(&workspace_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to remove agent workspace at {}",
+                    workspace_dir.display()
+                )
+            })?;
+    }
+
+    println!("Deleted agent {alias:?}");
+    Ok(())
+}
+
+fn agents_list(config: &Config) {
+    if config.agents.is_empty() {
+        println!("(no agents configured)");
+        return;
+    }
+    let mut aliases: Vec<&String> = config.agents.keys().collect();
+    aliases.sort();
+    println!("Configured agents ({}):", aliases.len());
+    for alias in aliases {
+        let cfg = &config.agents[alias];
+        let channels: Vec<String> = cfg
+            .channels
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect();
+        let channel_summary = if channels.is_empty() {
+            "(no channels)".to_string()
+        } else {
+            channels.join(", ")
+        };
+        let backend = cfg.memory.backend;
+        println!(
+            "  - {alias} | risk: {risk} | model: {model} | memory: {backend:?} | channels: {channel_summary}",
+            risk = cfg.risk_profile,
+            model = cfg.model_provider.as_str(),
+        );
     }
 }
 
