@@ -108,7 +108,6 @@ pub use zeroclaw_tools::tool_search::ToolSearchTool;
 pub use zeroclaw_tools::weather_tool::WeatherTool;
 pub use zeroclaw_tools::web_fetch::WebFetchTool;
 pub use zeroclaw_tools::web_search_tool::WebSearchTool;
-pub use zeroclaw_tools::workspace_tool::WorkspaceTool;
 pub use zeroclaw_tools::wrappers::{PathGuardedTool, RateLimitedTool};
 
 // Traits from zeroclaw-api
@@ -972,23 +971,6 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(delegate_tool));
         Some(parent_tools)
     };
-
-    // Workspace management tool (conditionally registered when workspace isolation is enabled)
-    if root_config.workspace.enabled {
-        let workspaces_dir = if root_config.workspace.workspaces_dir.starts_with("~/") {
-            let home = directories::UserDirs::new()
-                .map(|u| u.home_dir().to_path_buf())
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            home.join(&root_config.workspace.workspaces_dir[2..])
-        } else {
-            std::path::PathBuf::from(&root_config.workspace.workspaces_dir)
-        };
-        let ws_manager = zeroclaw_config::workspace::WorkspaceManager::new(workspaces_dir);
-        tool_arcs.push(Arc::new(WorkspaceTool::new(
-            Arc::new(tokio::sync::RwLock::new(ws_manager)),
-            security.clone(),
-        )));
-    }
 
     // Verifiable Intent tool (opt-in via config)
     if root_config.verifiable_intent.enabled {
