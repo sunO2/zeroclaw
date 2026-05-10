@@ -20281,8 +20281,7 @@ allowed_users = []
             if field.is_secret
                 || matches!(
                     field.kind,
-                    crate::config::PropKind::StringArray
-                        | crate::config::PropKind::ObjectArray
+                    crate::config::PropKind::StringArray | crate::config::PropKind::ObjectArray
                 )
             {
                 continue;

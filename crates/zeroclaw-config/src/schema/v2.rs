@@ -352,6 +352,14 @@ impl V2Config {
             tracing::info!(target: "migration", "[channels] sections alias-wrapped, discord_history folded");
         }
 
+        // 7b. Per-channel `allowed_users` → synthesized
+        //     `[peer_groups.<type>_<alias>]` entries. The channel-level
+        //     allowlist still works (channel impls consult it directly),
+        //     but operators get the V3 peer-group surface populated for
+        //     free, ready to grow into cross-agent routing without
+        //     re-typing every authorized handle.
+        fold_channel_allowed_users_into_peer_groups(&mut passthrough);
+
         // 8. agents → strip inline brain, synthesize provider aliases.
         //    If there are no [agents] blocks but the user had brain config
         //    folded onto a provider entry, synthesize a default agent so V3
@@ -913,22 +921,126 @@ fn drop_cost_prices_with_logs(prices: &toml::Table) {
     }
 }
 
-/// Wrap V2 `Option<T>` channel sections into V3 `HashMap<String, T>` keyed by
-/// `"default"`. Applies, per channel instance:
+/// Synthesize one `[peer_groups.<type>_<alias>]` per channel that has a
+/// non-empty `allowed_users` array. The synthesized group seeds the V3
+/// peer-group surface with the operator's existing channel-level
+/// allowlist so cross-agent routing works without re-typing every
+/// authorized handle.
 ///
-/// - **discord_history fold**: `[channels.discord_history]` → `[channels.discord]`
-///   with `archive = true`. Effective `enabled` is the OR of both sides so a
-///   user with only `discord_history.enabled = true` still ends up with an
-///   enabled merged discord block.
-/// - **T3–T6 singular→plural folds** per channel type (`discord.guild_id` →
-///   `guild_ids[]`, `mattermost.channel_id` → `channel_ids[]`,
-///   `reddit.subreddit` → `subreddits[]`, `signal.group_id` → `group_ids[]`
-///   or `dm_only=true` for the `"dm"` sentinel).
-/// - **T7 enabled filter**: V3 dropped `enabled: bool` from every channel
-///   config. V2 default was `false`. Channels whose V2 `enabled` was not
-///   explicitly `true` are dropped from the V3 HashMap entirely; channels
-///   that survive have their `enabled` field stripped (V3 has no slot for it).
-///   Per-drop INFO log names the channel type and reason.
+/// - Channels without `allowed_users` (or with only `*`) are skipped:
+///   wildcard allowlists imply "anyone", which a peer group can't
+///   express; the channel-level allowlist stays as the gate.
+/// - The synthesized group's name (`<type>_<alias>`) collides only if
+///   the operator already authored a peer group with that exact name;
+///   in that case the existing group is left untouched.
+/// - The original `allowed_users` field stays on the channel — channel
+///   impls still consult it directly. The peer group is additive: the
+///   operator can grow it into mutual cross-agent routing while the
+///   legacy allowlist remains as the inbound gate.
+fn fold_channel_allowed_users_into_peer_groups(passthrough: &mut toml::Table) {
+    let Some(channels_value) = passthrough.get("channels") else {
+        return;
+    };
+    let Some(channels_table) = channels_value.as_table() else {
+        return;
+    };
+
+    // Collect synthesized groups out-of-band so we don't borrow
+    // passthrough mutably while still reading the channels view.
+    let mut synthesized: Vec<(String, toml::Table)> = Vec::new();
+    for (channel_type, type_value) in channels_table {
+        let Some(type_table) = type_value.as_table() else {
+            continue;
+        };
+        for (alias, alias_value) in type_table {
+            let Some(alias_table) = alias_value.as_table() else {
+                continue;
+            };
+            let Some(allowed) = alias_table.get("allowed_users").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            let usernames: Vec<String> = allowed
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != "*")
+                .map(str::to_string)
+                .collect();
+            if usernames.is_empty() {
+                continue;
+            }
+            let group_name = format!("{channel_type}_{alias}");
+            let mut group_entry = toml::Table::new();
+            group_entry.insert(
+                "channel".to_string(),
+                toml::Value::String(format!("{channel_type}.{alias}")),
+            );
+            let external_peers: Vec<toml::Value> = usernames
+                .into_iter()
+                .map(|u| {
+                    let mut entry = toml::Table::new();
+                    entry.insert("username".to_string(), toml::Value::String(u));
+                    toml::Value::Table(entry)
+                })
+                .collect();
+            group_entry.insert(
+                "external_peers".to_string(),
+                toml::Value::Array(external_peers),
+            );
+            synthesized.push((group_name, group_entry));
+        }
+    }
+
+    if synthesized.is_empty() {
+        return;
+    }
+
+    let groups_value = passthrough
+        .entry("peer_groups".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let Some(groups_table) = groups_value.as_table_mut() else {
+        // Operator authored `peer_groups` as a non-table; bail rather
+        // than overwrite their (broken) shape — V3 deserialization will
+        // surface the real error.
+        return;
+    };
+    let mut added = 0usize;
+    for (name, entry) in synthesized {
+        if groups_table.contains_key(&name) {
+            // Operator-authored group with the exact synthesized name
+            // wins; folding would be silent overwrite.
+            continue;
+        }
+        groups_table.insert(name, toml::Value::Table(entry));
+        added += 1;
+    }
+    if added > 0 {
+        tracing::info!(
+            target: "migration",
+            "[channels.*.allowed_users] folded into {added} synthesized [peer_groups.<type>_<alias>] entries"
+        );
+    }
+}
+
+/// Wrap V2 `Option<T>` channel sections into V3 `HashMap<String, T>` keyed
+/// by `"default"`. Applies, per channel instance:
+///
+/// - **discord_history fold**: `[channels.discord_history]` →
+///   `[channels.discord]` with `archive = true`. Effective `enabled` is
+///   the OR of both sides so a user with only
+///   `discord_history.enabled = true` still ends up with an enabled
+///   merged discord block.
+/// - **T3–T6 singular→plural folds** per channel type
+///   (`discord.guild_id` → `guild_ids[]`, `mattermost.channel_id` →
+///   `channel_ids[]`, `reddit.subreddit` → `subreddits[]`,
+///   `signal.group_id` → `group_ids[]` or `dm_only=true` for the
+///   `"dm"` sentinel).
+/// - **T7 enabled filter**: V3 dropped `enabled: bool` from every
+///   channel config. V2 default was `false`. Channels whose V2
+///   `enabled` was not explicitly `true` are dropped from the V3
+///   HashMap entirely; channels that survive have their `enabled`
+///   field stripped (V3 has no slot for it). Per-drop INFO log names
+///   the channel type and reason.
 ///
 /// `cli: bool` is preserved at the top-level `channels.cli`, not aliased.
 fn alias_wrap_channels(channels_value: toml::Value) -> toml::Table {

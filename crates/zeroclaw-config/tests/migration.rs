@@ -1229,3 +1229,113 @@ model_provider = "openai.default"
         .expect("vision route");
     assert_eq!(vision.model_provider, "openai");
 }
+
+// ─────────────────────────────────────────────────────────────
+// Channel allowed_users → peer_groups synthesis
+// ─────────────────────────────────────────────────────────────
+
+#[test]
+fn v2_channel_allowed_users_fold_into_synthesized_peer_groups() {
+    let v3 = migrate_v2(
+        r#"
+[channels.discord]
+enabled = true
+bot_token = "tok"
+allowed_users = ["alice", "bob"]
+
+[channels.slack]
+enabled = true
+bot_token = "tok"
+allowed_users = ["@oncall"]
+"#,
+    );
+    let groups = v3
+        .get("peer_groups")
+        .and_then(toml::Value::as_table)
+        .expect("peer_groups synthesized");
+
+    let discord_group = groups
+        .get("discord_default")
+        .and_then(toml::Value::as_table)
+        .expect("discord allow-list folds into [peer_groups.discord_default]");
+    assert_eq!(
+        discord_group.get("channel").and_then(toml::Value::as_str),
+        Some("discord.default"),
+    );
+    let discord_peers: Vec<&str> = discord_group
+        .get("external_peers")
+        .and_then(toml::Value::as_array)
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.get("username").and_then(toml::Value::as_str))
+        .collect();
+    assert_eq!(discord_peers, vec!["alice", "bob"]);
+
+    let slack_group = groups
+        .get("slack_default")
+        .and_then(toml::Value::as_table)
+        .expect("slack allow-list folds into [peer_groups.slack_default]");
+    assert_eq!(
+        slack_group.get("channel").and_then(toml::Value::as_str),
+        Some("slack.default"),
+    );
+}
+
+#[test]
+fn v2_channel_allowed_users_fold_skips_wildcard_only_lists() {
+    // `allowed_users = ["*"]` means "anyone"; a peer group can't
+    // express that, so the synthesis is a no-op for those channels.
+    let v3 = migrate_v2(
+        r#"
+[channels.telegram]
+enabled = true
+bot_token = "tok"
+allowed_users = ["*"]
+"#,
+    );
+    assert!(
+        v3.get("peer_groups").is_none()
+            || v3
+                .get("peer_groups")
+                .and_then(toml::Value::as_table)
+                .map(|t| !t.contains_key("telegram_default"))
+                .unwrap_or(true),
+        "wildcard-only allowed_users must not synthesize a peer group"
+    );
+}
+
+#[test]
+fn v2_channel_allowed_users_fold_does_not_overwrite_authored_peer_group() {
+    // If the operator already authored a peer_group with the
+    // synthesized name, leave it alone — silent overwrite would lose
+    // their hand-curated `agents` list.
+    let v3 = migrate_v2(
+        r#"
+[channels.discord]
+enabled = true
+bot_token = "tok"
+allowed_users = ["alice"]
+
+[peer_groups.discord_default]
+channel = "discord.default"
+agents = ["researcher"]
+"#,
+    );
+    let group = v3
+        .get("peer_groups")
+        .and_then(toml::Value::as_table)
+        .and_then(|t| t.get("discord_default"))
+        .and_then(toml::Value::as_table)
+        .expect("authored group survives");
+    let agents: Vec<&str> = group
+        .get("agents")
+        .and_then(toml::Value::as_array)
+        .unwrap()
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(agents, vec!["researcher"]);
+    // The authored group has no `external_peers` field; the synthesizer
+    // must not have injected one.
+    assert!(group.get("external_peers").is_none());
+}
