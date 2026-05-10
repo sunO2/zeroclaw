@@ -257,12 +257,11 @@ impl IrcChannel {
     }
 
     fn is_user_allowed(&self, nick: &str) -> bool {
-        if self.allowed_users.iter().any(|u| u == "*") {
-            return true;
-        }
-        self.allowed_users
-            .iter()
-            .any(|u| u.eq_ignore_ascii_case(nick))
+        crate::allowlist::is_user_allowed(
+            &self.allowed_users,
+            nick,
+            crate::allowlist::Match::CaseInsensitive,
+        )
     }
 
     fn is_mentioned(my_nick: &str, text: &str) -> bool {

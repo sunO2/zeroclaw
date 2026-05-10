@@ -75,7 +75,11 @@ impl NextcloudTalkChannel {
     }
 
     fn is_user_allowed(&self, actor_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == actor_id)
+        crate::allowlist::is_user_allowed(
+            &self.allowed_users,
+            actor_id,
+            crate::allowlist::Match::Sensitive,
+        )
     }
 
     /// Returns true if the given name/id belongs to this bot itself.

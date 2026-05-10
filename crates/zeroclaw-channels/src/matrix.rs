@@ -189,13 +189,11 @@ mod allowlist {
     /// `@bot:example.org`. ASCII case-insensitive match is the conservative
     /// reading.
     pub(super) fn user_allowed(allowed_users: &[String], sender: &str) -> bool {
-        if allowed_users.is_empty() {
-            return false;
-        }
-        if allowed_users.iter().any(|u| u == "*") {
-            return true;
-        }
-        allowed_users.iter().any(|u| u.eq_ignore_ascii_case(sender))
+        crate::allowlist::is_user_allowed(
+            allowed_users,
+            sender,
+            crate::allowlist::Match::CaseInsensitive,
+        )
     }
 
     pub(super) fn room_allowed_static(allowed_rooms: &[String], room_id: &str) -> bool {

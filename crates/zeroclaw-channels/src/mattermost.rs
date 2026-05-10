@@ -174,7 +174,11 @@ impl MattermostChannel {
     /// Check if a user ID is in the allowlist.
     /// Empty list means deny everyone. "*" means allow everyone.
     fn is_user_allowed(&self, user_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        crate::allowlist::is_user_allowed(
+            &self.allowed_users,
+            user_id,
+            crate::allowlist::Match::Sensitive,
+        )
     }
 
     /// Get the bot's own user ID and username so we can ignore our own messages

@@ -34,7 +34,11 @@ impl TwitterChannel {
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        crate::allowlist::is_user_allowed(
+            &self.allowed_users,
+            user_id,
+            crate::allowlist::Match::Sensitive,
+        )
     }
 
     /// Check and insert tweet ID for deduplication.

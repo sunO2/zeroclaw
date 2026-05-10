@@ -1053,7 +1053,11 @@ impl LarkChannel {
 
     /// Check if a user open_id is allowed
     fn is_user_allowed(&self, open_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == open_id)
+        crate::allowlist::is_user_allowed(
+            &self.allowed_users,
+            open_id,
+            crate::allowlist::Match::Sensitive,
+        )
     }
 
     /// Get or refresh tenant access token

@@ -716,7 +716,13 @@ impl WeChatChannel {
     fn is_user_allowed(&self, user_id: &str) -> bool {
         self.allowed_users
             .read()
-            .map(|users| users.iter().any(|u| u == "*" || u == user_id))
+            .map(|users| {
+                crate::allowlist::is_user_allowed(
+                    &users,
+                    user_id,
+                    crate::allowlist::Match::Sensitive,
+                )
+            })
             .unwrap_or(false)
     }
 

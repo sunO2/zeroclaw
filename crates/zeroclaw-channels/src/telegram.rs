@@ -961,7 +961,13 @@ impl TelegramChannel {
         let identity = Self::normalize_identity(username);
         self.allowed_users
             .read()
-            .map(|users| users.iter().any(|u| u == "*" || u == &identity))
+            .map(|users| {
+                crate::allowlist::is_user_allowed(
+                    &users,
+                    &identity,
+                    crate::allowlist::Match::Sensitive,
+                )
+            })
             .unwrap_or(false)
     }
 

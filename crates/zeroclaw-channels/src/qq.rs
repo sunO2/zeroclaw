@@ -334,7 +334,11 @@ impl QQChannel {
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {
-        self.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        crate::allowlist::is_user_allowed(
+            &self.allowed_users,
+            user_id,
+            crate::allowlist::Match::Sensitive,
+        )
     }
 
     /// Fetch an access token from QQ's OAuth2 endpoint.
