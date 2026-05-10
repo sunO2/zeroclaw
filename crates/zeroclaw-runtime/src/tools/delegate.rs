@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use zeroclaw_api::tool::{Tool, ToolResult};
 use zeroclaw_config::schema::{
-    AliasedAgentConfig, DelegateToolConfig, ModelProviderConfig, RiskProfileConfig,
+    AliasedAgentConfig, Config, DelegateToolConfig, ModelProviderConfig, RiskProfileConfig,
     RuntimeProfileConfig, SkillBundleConfig,
 };
 use zeroclaw_memory::Memory;
@@ -94,6 +94,15 @@ pub struct DelegateTool {
     runtime_profiles: Arc<HashMap<String, RuntimeProfileConfig>>,
     /// named skill bundles for skills-directory resolution.
     skill_bundles: Arc<HashMap<String, SkillBundleConfig>>,
+    /// Optional handle to the loaded root config used to resolve a
+    /// per-target `SecurityPolicy` at delegate time. When set, every
+    /// delegation validates the target agent's policy as a subset of
+    /// the calling agent's via `ensure_no_escalation_beyond` and
+    /// inherits the caller's `PerSenderTracker` so action / cost
+    /// budgets are shared between caller and delegated runs. When
+    /// unset (legacy unit-test constructors), DelegateTool falls back
+    /// to using `self.security` for the spawned inner DelegateTool.
+    root_config: Option<Arc<Config>>,
 }
 
 impl DelegateTool {
@@ -133,6 +142,7 @@ impl DelegateTool {
             risk_profiles: Arc::new(HashMap::new()),
             runtime_profiles: Arc::new(HashMap::new()),
             skill_bundles: Arc::new(HashMap::new()),
+            root_config: None,
         }
     }
 
@@ -178,6 +188,7 @@ impl DelegateTool {
             risk_profiles: Arc::new(HashMap::new()),
             runtime_profiles: Arc::new(HashMap::new()),
             skill_bundles: Arc::new(HashMap::new()),
+            root_config: None,
         }
     }
 
@@ -283,6 +294,52 @@ impl DelegateTool {
     pub fn with_skill_bundles(mut self, m: HashMap<String, SkillBundleConfig>) -> Self {
         self.skill_bundles = Arc::new(m);
         self
+    }
+
+    /// Attach the loaded root config so DelegateTool can resolve a
+    /// per-target `SecurityPolicy` at delegate time, validate it as a
+    /// subset of the caller's policy, and share the caller's
+    /// `PerSenderTracker` with the delegated run.
+    pub fn with_root_config(mut self, config: Arc<Config>) -> Self {
+        self.root_config = Some(config);
+        self
+    }
+
+    /// Build a `SecurityPolicy` for the delegated target agent
+    /// validated as a subset of the caller's policy with shared
+    /// action / cost tracker.
+    ///
+    /// Returns:
+    /// - `Ok(target_policy)` when `root_config` is set, the target
+    ///   resolves, and its policy is a subset of the caller's
+    ///   (`ensure_no_escalation_beyond`). The returned policy's
+    ///   `tracker` field is the caller's `Arc`-shared tracker so
+    ///   delegated actions count against the caller's
+    ///   `max_actions_per_hour` / `max_cost_per_day_cents`.
+    /// - `Err(_)` on escalation: the target's risk profile or
+    ///   workspace.access map would widen permissions beyond the
+    ///   caller. The originating `EscalationViolation` is chained.
+    /// - `Ok(self.security)` (caller's policy) when `root_config`
+    ///   is `None`. This branch only fires for the legacy unit-test
+    ///   constructors that don't plumb root config.
+    fn policy_for_target(&self, target_alias: &str) -> anyhow::Result<Arc<SecurityPolicy>> {
+        let Some(config) = self.root_config.as_ref() else {
+            return Ok(Arc::clone(&self.security));
+        };
+        let mut target_policy = SecurityPolicy::for_agent(config, target_alias).map_err(|e| {
+            anyhow::anyhow!(
+                "could not resolve security policy for delegate target {target_alias:?}: {e}"
+            )
+        })?;
+        target_policy
+            .ensure_no_escalation_beyond(&self.security)
+            .map_err(|violation| {
+                anyhow::anyhow!(
+                    "delegate target {target_alias:?} policy escalates beyond caller: {violation}"
+                )
+            })?;
+        target_policy.tracker = self.security.tracker.clone();
+        Ok(Arc::new(target_policy))
     }
 
     /// Resolve `model_provider` ("type.alias") → (provider_type, credential, model, temperature).
@@ -612,6 +669,14 @@ impl DelegateTool {
             });
         }
 
+        if let Err(e) = self.policy_for_target(agent_name) {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("{e:#}")),
+            });
+        }
+
         // Create model_provider for this agent
         let model_provider: Box<dyn ModelProvider> =
             match zeroclaw_providers::create_model_provider_with_options(
@@ -764,6 +829,17 @@ impl DelegateTool {
             });
         }
 
+        let target_policy = match self.policy_for_target(agent_name) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("{e:#}")),
+                });
+            }
+        };
+
         let task_id = uuid::Uuid::new_v4().to_string();
         let results_dir = self.results_dir();
         tokio::fs::create_dir_all(&results_dir).await?;
@@ -796,9 +872,8 @@ impl DelegateTool {
         let json_bytes = serde_json::to_vec_pretty(&initial_result)?;
         tokio::fs::write(&result_path, &json_bytes).await?;
 
-        // Clone everything needed for the spawned task
         let agents = Arc::clone(&self.agents);
-        let security = Arc::clone(&self.security);
+        let security = target_policy;
         let global_credential = self.global_credential.clone();
         let provider_runtime_options = self.provider_runtime_options.clone();
         let depth = self.depth;
@@ -813,9 +888,9 @@ impl DelegateTool {
         let risk_profiles = Arc::clone(&self.risk_profiles);
         let runtime_profiles = Arc::clone(&self.runtime_profiles);
         let skill_bundles = Arc::clone(&self.skill_bundles);
+        let root_config = self.root_config.clone();
 
         tokio::spawn(async move {
-            // Build an inner DelegateTool for the spawned context
             let inner = DelegateTool {
                 agents,
                 security,
@@ -833,6 +908,7 @@ impl DelegateTool {
                 risk_profiles,
                 runtime_profiles,
                 skill_bundles,
+                root_config,
             };
 
             let args_inner = json!({
@@ -961,6 +1037,23 @@ impl DelegateTool {
             }
         }
 
+        let mut target_policies: HashMap<String, Arc<SecurityPolicy>> =
+            HashMap::with_capacity(agent_names.len());
+        for name in &agent_names {
+            match self.policy_for_target(name) {
+                Ok(p) => {
+                    target_policies.insert(name.clone(), p);
+                }
+                Err(e) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("{e:#}")),
+                    });
+                }
+            }
+        }
+
         // Capture the current receipt scope so each spawned sub-agent task
         // re-enters it. `tokio::spawn` does not propagate task-locals, so
         // without this `execute_sync`'s `try_with` would resolve to `None`
@@ -977,7 +1070,10 @@ impl DelegateTool {
         let mut handles = Vec::with_capacity(agent_names.len());
         for agent_name in &agent_names {
             let agents = Arc::clone(&self.agents);
-            let security = Arc::clone(&self.security);
+            let security = target_policies
+                .get(agent_name)
+                .cloned()
+                .unwrap_or_else(|| Arc::clone(&self.security));
             let global_credential = self.global_credential.clone();
             let provider_runtime_options = self.provider_runtime_options.clone();
             let depth = self.depth;
@@ -995,6 +1091,7 @@ impl DelegateTool {
             let runtime_profiles = Arc::clone(&self.runtime_profiles);
             let skill_bundles = Arc::clone(&self.skill_bundles);
             let receipt_scope = parent_receipt_scope.clone();
+            let root_config = self.root_config.clone();
 
             handles.push(tokio::spawn(async move {
                 let inner = DelegateTool {
@@ -1014,6 +1111,7 @@ impl DelegateTool {
                     risk_profiles,
                     runtime_profiles,
                     skill_bundles,
+                    root_config,
                 };
                 let agent_name_for_return = agent_name.clone();
                 let result = crate::agent::tool_receipts::TOOL_LOOP_RECEIPT_CONTEXT
@@ -3061,5 +3159,115 @@ mod tests {
         assert!(result.error.unwrap().contains("Invalid task_id"));
 
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    fn config_with_two_agents(
+        caller_alias: &str,
+        caller_max_actions: u32,
+        target_alias: &str,
+        target_max_actions: u32,
+    ) -> Arc<zeroclaw_config::schema::Config> {
+        use zeroclaw_config::schema::{AliasedAgentConfig, Config, RiskProfileConfig};
+        let mut config = Config::default();
+        config.risk_profiles.insert(
+            "narrow".to_string(),
+            RiskProfileConfig {
+                max_actions_per_hour: caller_max_actions,
+                ..RiskProfileConfig::default()
+            },
+        );
+        config.risk_profiles.insert(
+            "wide".to_string(),
+            RiskProfileConfig {
+                max_actions_per_hour: target_max_actions,
+                ..RiskProfileConfig::default()
+            },
+        );
+        config.agents.insert(
+            caller_alias.to_string(),
+            AliasedAgentConfig {
+                risk_profile: "narrow".to_string(),
+                model_provider: "ollama.caller".into(),
+                ..AliasedAgentConfig::default()
+            },
+        );
+        config.agents.insert(
+            target_alias.to_string(),
+            AliasedAgentConfig {
+                risk_profile: if target_max_actions > caller_max_actions {
+                    "wide"
+                } else {
+                    "narrow"
+                }
+                .to_string(),
+                model_provider: "ollama.target".into(),
+                ..AliasedAgentConfig::default()
+            },
+        );
+        Arc::new(config)
+    }
+
+    #[tokio::test]
+    async fn delegate_rejects_target_whose_policy_escalates_caller() {
+        let config = config_with_two_agents("caller", 5, "target", 50);
+        let caller_policy =
+            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+        let mut delegate_agents = HashMap::new();
+        for (name, agent) in &config.agents {
+            delegate_agents.insert(name.clone(), agent.clone());
+        }
+        let tool = DelegateTool::new(delegate_agents, None, caller_policy)
+            .with_root_config(config.clone());
+
+        let err = tool
+            .policy_for_target("target")
+            .expect_err("escalating target must be rejected at delegate boundary");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("escalates beyond caller"),
+            "expected escalation error, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_target_inherits_caller_action_tracker() {
+        let config = config_with_two_agents("caller", 5, "target", 5);
+        let caller_policy =
+            Arc::new(SecurityPolicy::for_agent(&config, "caller").expect("caller policy resolves"));
+        let mut delegate_agents = HashMap::new();
+        for (name, agent) in &config.agents {
+            delegate_agents.insert(name.clone(), agent.clone());
+        }
+        let tool = DelegateTool::new(delegate_agents, None, Arc::clone(&caller_policy))
+            .with_root_config(config.clone());
+
+        let bucket_key = "shared-budget-test";
+        let max = 2u32;
+        for _ in 0..max {
+            assert!(
+                caller_policy.tracker.record_within(bucket_key, max),
+                "caller's first {max} actions fit within the shared budget"
+            );
+        }
+
+        let target_policy = tool
+            .policy_for_target("target")
+            .expect("non-escalating target resolves");
+        assert!(
+            !target_policy.tracker.record_within(bucket_key, max),
+            "delegated target must consume from the caller's bucket; spawning the target should not reset the budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_without_root_config_falls_back_to_caller_policy() {
+        let tool = DelegateTool::new(sample_agents(), None, test_security());
+        let resolved = tool
+            .policy_for_target("researcher")
+            .expect("fallback path returns caller policy unchanged");
+        assert!(
+            Arc::ptr_eq(&resolved, &tool.security),
+            "without root_config the helper returns the caller's Arc verbatim"
+        );
     }
 }

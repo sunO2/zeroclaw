@@ -979,7 +979,8 @@ pub fn all_tools_with_runtime(
                 .parent()
                 .map(std::path::Path::to_path_buf)
                 .unwrap_or_default(),
-        );
+        )
+        .with_root_config(config.clone());
         tool_arcs.push(Arc::new(delegate_tool));
         Some(parent_tools)
     };

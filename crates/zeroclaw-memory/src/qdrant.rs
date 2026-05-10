@@ -321,58 +321,8 @@ impl Memory for QdrantMemory {
         category: MemoryCategory,
         session_id: Option<&str>,
     ) -> Result<()> {
-        self.ensure_initialized().await?;
-
-        // Generate embedding for the content
-        let combined_text = format!("{}\n{}", key, content);
-        let embedding = self.embedder.embed_one(&combined_text).await?;
-
-        if embedding.is_empty() {
-            anyhow::bail!("Qdrant requires non-zero dimensional embeddings");
-        }
-
-        let id = Uuid::new_v4().to_string();
-        let timestamp = Utc::now().to_rfc3339();
-
-        let payload = MemoryPayload {
-            key: key.to_string(),
-            content: content.to_string(),
-            category: Self::category_to_str(&category),
-            timestamp,
-            session_id: session_id.map(str::to_string),
-            agent_id: None,
-        };
-
-        // Delete any existing point with the same key first
-        let _ = self.forget(key).await;
-
-        // Upsert point
-        let upsert_body = serde_json::json!({
-            "points": [{
-                "id": id,
-                "vector": embedding,
-                "payload": payload
-            }]
-        });
-
-        let resp = self
-            .request(
-                reqwest::Method::PUT,
-                &format!("/collections/{}/points", self.collection),
-            )
-            .query(&[("wait", "true")])
-            .json(&upsert_body)
-            .send()
+        self.store_with_agent(key, content, category, session_id, None, None, None)
             .await
-            .context("failed to upsert point to Qdrant")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Qdrant upsert failed ({status}): {text}");
-        }
-
-        Ok(())
     }
 
     async fn recall(

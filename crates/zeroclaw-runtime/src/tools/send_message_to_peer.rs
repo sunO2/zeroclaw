@@ -18,11 +18,23 @@
 //!   own handle back through inbound; the in-process path avoids
 //!   that and lets the orchestrator deliver beta's reply (if any)
 //!   through the same channel beta is configured on.
+//!
+//!   This path is fire-and-forget: the recipient runs on a detached
+//!   `tokio::spawn`, so the sender's `ToolResult.success = true`
+//!   means "accepted for processing", not "completed". Recipient
+//!   errors do NOT surface to the sender; they are emitted via
+//!   `tracing::warn!` inside the spawned task and via the recipient
+//!   agent's own observability (audit log, runtime trace, channel
+//!   reply). Observers diagnosing a missing peer message should look
+//!   at the recipient's spans, not the sender's tool output.
 //! - **External peers** (humans, external bots) route through
 //!   [`crate::cron::scheduler::deliver_announcement`] with the
 //!   external username as the platform target. The channel registry
 //!   the binary registers at startup forwards the send to the live
-//!   channel instance.
+//!   channel instance. This path is synchronous: the
+//!   `deliver_announcement` future resolves before the tool returns,
+//!   so a `success = false` here genuinely reflects a delivery
+//!   failure.
 
 use crate::cron::scheduler::deliver_announcement;
 use crate::peers::resolve_peer_set;
@@ -196,7 +208,9 @@ impl Tool for SendMessageToPeerTool {
 
             return Ok(ToolResult {
                 success: true,
-                output: format!("delivered to peer agent {canonical:?} (in-process)"),
+                output: format!(
+                    "accepted for in-process delivery to peer agent {canonical:?} (recipient runs detached; observe its agent loop for the actual outcome)"
+                ),
                 error: None,
             });
         }
