@@ -167,12 +167,10 @@ enum NodeMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum GatewayMessage {
-    #[allow(dead_code)] // Serialized gateway protocol message
     Registered {
         node_id: String,
         capabilities_count: usize,
     },
-    #[allow(dead_code)] // Serialized gateway protocol message
     Error { message: String },
     Invoke {
         call_id: String,

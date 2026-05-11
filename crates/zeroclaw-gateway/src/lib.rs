@@ -1077,9 +1077,7 @@ pub async fn run_gateway(
         None
     };
     let pending_pairings = if config.gateway.require_pairing {
-        Some(Arc::new(api_pairing::PairingStore::new(
-            config.gateway.pairing_dashboard.max_pending_codes,
-        )))
+        Some(Arc::new(api_pairing::PairingStore::new()))
     } else {
         None
     };
