@@ -166,9 +166,6 @@ struct AnthropicUsage {
     #[serde(default)]
     output_tokens: Option<u64>,
     #[serde(default)]
-    #[allow(dead_code)]
-    cache_creation_input_tokens: Option<u64>,
-    #[serde(default)]
     cache_read_input_tokens: Option<u64>,
 }
 
@@ -257,12 +254,6 @@ impl AnthropicModelProvider {
             ])),
             None => Some(SystemPrompt::Blocks(vec![prefix])),
         }
-    }
-
-    /// Cache system prompts larger than ~1024 tokens (3KB of text)
-    #[allow(dead_code)]
-    fn should_cache_system(text: &str) -> bool {
-        text.len() > 3072
     }
 
     /// Cache conversations with more than 1 non-system message (i.e. after first exchange)
@@ -1621,29 +1612,6 @@ data: {\"type\":\"message_stop\"}\n\n";
         let json = serde_json::to_string(&tool).unwrap();
         assert!(json.contains("get_weather"));
         assert!(json.contains(r#""cache_control":{"type":"ephemeral"}"#));
-    }
-
-    #[test]
-    fn should_cache_system_small_prompt() {
-        let small_prompt = "You are a helpful assistant.";
-        assert!(!AnthropicModelProvider::should_cache_system(small_prompt));
-    }
-
-    #[test]
-    fn should_cache_system_large_prompt() {
-        let large_prompt = "a".repeat(3073); // Just over 3072 bytes
-        assert!(AnthropicModelProvider::should_cache_system(&large_prompt));
-    }
-
-    #[test]
-    fn should_cache_system_boundary() {
-        let boundary_prompt = "a".repeat(3072); // Exactly 3072 bytes
-        assert!(!AnthropicModelProvider::should_cache_system(
-            &boundary_prompt
-        ));
-
-        let over_boundary = "a".repeat(3073);
-        assert!(AnthropicModelProvider::should_cache_system(&over_boundary));
     }
 
     #[test]

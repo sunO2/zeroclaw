@@ -188,11 +188,6 @@ fn first_nonempty(text: Option<&str>) -> Option<String> {
     })
 }
 
-#[allow(dead_code)]
-fn resolve_instructions(system_prompt: Option<&str>) -> String {
-    first_nonempty(system_prompt).unwrap_or_else(|| DEFAULT_CODEX_INSTRUCTIONS.to_string())
-}
-
 fn normalize_model_id(model: &str) -> &str {
     model.rsplit('/').next().unwrap_or(model)
 }
@@ -503,28 +498,6 @@ fn append_utf8_stream_chunk(
             Ok(())
         }
     }
-}
-
-#[allow(dead_code)]
-fn decode_utf8_stream_chunks<'a, I>(chunks: I) -> anyhow::Result<String>
-where
-    I: IntoIterator<Item = &'a [u8]>,
-{
-    let mut body = String::new();
-    let mut pending = Vec::new();
-
-    for chunk in chunks {
-        append_utf8_stream_chunk(&mut body, &mut pending, chunk)?;
-    }
-
-    if !pending.is_empty() {
-        let err = std::str::from_utf8(&pending).expect_err("pending bytes should be invalid UTF-8");
-        return Err(anyhow::anyhow!(
-            "OpenAI Codex response ended with incomplete UTF-8: {err}"
-        ));
-    }
-
-    Ok(body)
 }
 
 /// Read the response body incrementally via `bytes_stream()` to avoid
@@ -842,30 +815,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_instructions_uses_default_when_missing() {
-        assert_eq!(
-            resolve_instructions(None),
-            DEFAULT_CODEX_INSTRUCTIONS.to_string()
-        );
-    }
-
-    #[test]
-    fn resolve_instructions_uses_default_when_blank() {
-        assert_eq!(
-            resolve_instructions(Some("   ")),
-            DEFAULT_CODEX_INSTRUCTIONS.to_string()
-        );
-    }
-
-    #[test]
-    fn resolve_instructions_uses_system_prompt_when_present() {
-        assert_eq!(
-            resolve_instructions(Some("Be strict")),
-            "Be strict".to_string()
-        );
-    }
-
-    #[test]
     fn clamp_reasoning_effort_adjusts_known_models() {
         assert_eq!(
             clamp_reasoning_effort("gpt-5-codex", "xhigh"),
@@ -938,20 +887,6 @@ data: [DONE]
 "#;
 
         assert_eq!(parse_sse_text(payload).unwrap().as_deref(), Some("Done"));
-    }
-
-    #[test]
-    fn decode_utf8_stream_chunks_handles_multibyte_split_across_chunks() {
-        let payload = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello 世\"}\n\ndata: [DONE]\n";
-        let bytes = payload.as_bytes();
-        let split_at = payload.find('世').unwrap() + 1;
-
-        let decoded = decode_utf8_stream_chunks([&bytes[..split_at], &bytes[split_at..]]).unwrap();
-        assert_eq!(decoded, payload);
-        assert_eq!(
-            parse_sse_text(&decoded).unwrap().as_deref(),
-            Some("Hello 世")
-        );
     }
 
     #[test]

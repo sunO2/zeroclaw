@@ -214,14 +214,6 @@ struct GeminiUsageMetadata {
     candidates_token_count: Option<u64>,
 }
 
-/// Response envelope for the internal cloudcode-pa API.
-/// The internal API nests the standard response under a `response` field.
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct InternalGenerateContentResponse {
-    response: GenerateContentResponse,
-}
-
 #[derive(Debug, Deserialize)]
 struct Candidate {
     #[serde(default)]
@@ -675,12 +667,6 @@ impl GeminiModelProvider {
             client_secret,
             expiry_millis,
         })
-    }
-
-    /// Get the Gemini CLI config directory (~/.gemini)
-    #[allow(dead_code)]
-    fn gemini_cli_dir() -> Option<PathBuf> {
-        UserDirs::new().map(|u| u.home_dir().join(".gemini"))
     }
 
     /// Check if Gemini CLI is configured and has valid credentials
@@ -1484,16 +1470,6 @@ mod tests {
     }
 
     #[test]
-    fn gemini_cli_dir_returns_path() {
-        let dir = GeminiModelProvider::gemini_cli_dir();
-        // Should return Some on systems with home dir
-        if UserDirs::new().is_some() {
-            assert!(dir.is_some());
-            assert!(dir.unwrap().ends_with(".gemini"));
-        }
-    }
-
-    #[test]
     fn auth_source_explicit_key() {
         let model_provider = test_model_provider(Some(GeminiAuth::ExplicitKey("key".into())));
         assert_eq!(model_provider.auth_source(), "config");
@@ -1766,36 +1742,6 @@ mod tests {
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"project\":\"my-gcp-project-id\""));
-    }
-
-    #[test]
-    fn internal_response_deserialize_nested() {
-        let json = r#"{
-            "response": {
-                "candidates": [{
-                    "content": {
-                        "parts": [{"text": "Hello from internal API!"}]
-                    }
-                }]
-            }
-        }"#;
-
-        let internal: InternalGenerateContentResponse = serde_json::from_str(json).unwrap();
-        let text = internal
-            .response
-            .candidates
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap()
-            .content
-            .unwrap()
-            .parts
-            .into_iter()
-            .next()
-            .unwrap()
-            .text;
-        assert_eq!(text, Some("Hello from internal API!".to_string()));
     }
 
     #[test]

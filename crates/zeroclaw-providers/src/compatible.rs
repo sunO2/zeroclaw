@@ -485,27 +485,6 @@ impl OpenAiCompatibleModelProvider {
         }
     }
 
-    #[allow(dead_code)]
-    fn tool_specs_to_openai_format(
-        tools: &[zeroclaw_api::tool::ToolSpec],
-    ) -> Vec<serde_json::Value> {
-        tools
-            .iter()
-            .map(|tool| {
-                let params =
-                    zeroclaw_api::schema::SchemaCleanr::clean_for_openai(tool.parameters.clone());
-                serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": params
-                    }
-                })
-            })
-            .collect()
-    }
-
     /// Returns true if the given model requires system messages to be merged
     /// into the first user message because its prompt template cannot handle
     /// the `system` role reliably (e.g. DeepSeek V3.2 Jinja rendering errors).
@@ -3572,26 +3551,6 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(value, serde_json::json!("You are a helpful assistant."));
-    }
-
-    #[test]
-    fn tool_specs_convert_to_openai_format() {
-        let specs = vec![zeroclaw_api::tool::ToolSpec {
-            name: "shell".to_string(),
-            description: "Run shell command".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"]
-            }),
-        }];
-
-        let tools = OpenAiCompatibleModelProvider::tool_specs_to_openai_format(&specs);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["type"], "function");
-        assert_eq!(tools[0]["function"]["name"], "shell");
-        assert_eq!(tools[0]["function"]["description"], "Run shell command");
-        assert_eq!(tools[0]["function"]["parameters"]["required"][0], "command");
     }
 
     #[test]
