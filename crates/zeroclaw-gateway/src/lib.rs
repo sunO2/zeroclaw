@@ -572,53 +572,86 @@ pub async fn run_gateway(
         (None, None)
     };
 
-    let (mut tools_registry_raw, delegate_handle_gw) = if let Some(ref agent_alias) =
-        agent_alias_opt
-    {
-        let risk_profile = config
-            .risk_profile_for_agent(agent_alias)
-            .with_context(|| {
-                format!(
-                    "agents.{agent_alias}.risk_profile does not name a configured risk_profiles entry"
-                )
-            })?
-            .clone();
-        let security = Arc::new(SecurityPolicy::for_agent(&config, agent_alias)?);
+    // The seeded `risk_profile` + `SecurityPolicy` here drive the legacy
+    // single-agent `/api/tools` listing and the `run_gateway_chat_with_tools`
+    // test mock — they are not load-bearing for per-request agent dispatch.
+    // When the seed agent's `risk_profile` (or any related per-agent
+    // validation) fails to resolve, the gateway must still boot so the
+    // operator can fix the config via `/admin/reload` or `/onboard`
+    // instead of crash-looping the daemon supervisor. Degraded boot:
+    // log a warning and fall through to the empty-tools-registry branch.
+    let agent_setup: Option<(
+        zeroclaw_config::schema::RiskProfileConfig,
+        Arc<SecurityPolicy>,
+    )> = agent_alias_opt.as_ref().and_then(|agent_alias| {
+        let Some(risk_profile) = config.risk_profile_for_agent(agent_alias) else {
+            tracing::warn!(
+                agent = %agent_alias,
+                "Gateway: agents.{agent_alias}.risk_profile does not name a configured \
+                 risk_profiles entry; booting with empty tools registry. Fix via \
+                 /admin/reload or /onboard.",
+            );
+            return None;
+        };
+        let risk_profile = risk_profile.clone();
+        let security = match SecurityPolicy::for_agent(&config, agent_alias) {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                tracing::warn!(
+                    agent = %agent_alias,
+                    error = %e,
+                    "Gateway: agent SecurityPolicy failed to build; booting with empty tools \
+                     registry. Fix [agents.{agent_alias}] via /admin/reload or /onboard.",
+                );
+                return None;
+            }
+        };
+        Some((risk_profile, security))
+    });
 
-        let (
-            tools_registry_raw,
-            delegate_handle_gw,
-            _reaction_handle_gw,
-            _channel_map_handle,
-            _ask_user_handle_gw,
-            _escalate_handle_gw,
-        ) = tools::all_tools_with_runtime(
-            Arc::new(config.clone()),
-            &security,
-            &risk_profile,
-            agent_alias,
-            runtime,
-            Arc::clone(&mem),
-            composio_key,
-            composio_entity_id,
-            &config.browser,
-            &config.http_request,
-            &config.web_fetch,
-            &config.workspace_dir,
-            &config.agents,
-            config
-                .first_model_provider()
-                .and_then(|e| e.api_key.as_deref()),
-            &config,
-            Some(canvas_store.clone()),
-        );
-        (tools_registry_raw, delegate_handle_gw)
-    } else {
-        tracing::info!(
-            "Gateway: no [agents.<alias>] configured — booting with empty tools registry. \
-             Visit http://{display_addr}/onboard to add an agent."
-        );
-        (Vec::new(), None)
+    let (mut tools_registry_raw, delegate_handle_gw) = match (&agent_alias_opt, agent_setup) {
+        (Some(agent_alias), Some((risk_profile, security))) => {
+            let (
+                tools_registry_raw,
+                delegate_handle_gw,
+                _reaction_handle_gw,
+                _channel_map_handle,
+                _ask_user_handle_gw,
+                _escalate_handle_gw,
+            ) = tools::all_tools_with_runtime(
+                Arc::new(config.clone()),
+                &security,
+                &risk_profile,
+                agent_alias,
+                runtime,
+                Arc::clone(&mem),
+                composio_key,
+                composio_entity_id,
+                &config.browser,
+                &config.http_request,
+                &config.web_fetch,
+                &config.workspace_dir,
+                &config.agents,
+                config
+                    .first_model_provider()
+                    .and_then(|e| e.api_key.as_deref()),
+                &config,
+                Some(canvas_store.clone()),
+            );
+            (tools_registry_raw, delegate_handle_gw)
+        }
+        (Some(_), None) => {
+            // Agent existed but its config failed to resolve. Warned
+            // above; fall through to the empty-registry shape.
+            (Vec::new(), None)
+        }
+        (None, _) => {
+            tracing::info!(
+                "Gateway: no [agents.<alias>] configured — booting with empty tools registry. \
+                 Visit http://{display_addr}/onboard to add an agent."
+            );
+            (Vec::new(), None)
+        }
     };
 
     // ── Wire MCP tools into the gateway tool registry (non-fatal) ───
@@ -2903,6 +2936,56 @@ mod tests {
             let result = handle.await.expect("task did not panic");
             panic!(
                 "gateway exited during boot with zero agents — must stay up for reload/onboard: {:?}",
+                result
+            );
+        }
+        handle.abort();
+    }
+
+    /// Regression: the gateway must boot even when an enabled agent's
+    /// `risk_profile` does not name a configured `risk_profiles` entry.
+    /// Earlier the boot path used `config.risk_profile_for_agent(...).with_context(...)?`
+    /// which propagated up through the daemon supervisor and crash-looped
+    /// the gateway component, locking the operator out of `/admin/reload`
+    /// and `/onboard` — the exact endpoints they need to fix the broken
+    /// risk_profile reference. The fix degrades gracefully: warn,
+    /// fall through to an empty tools registry, keep serving.
+    #[tokio::test]
+    async fn run_gateway_starts_with_unresolved_agent_risk_profile() {
+        use zeroclaw_config::schema::AliasedAgentConfig;
+
+        let mut config = Config::default();
+        // Enabled agent whose `risk_profile` does not resolve. No
+        // matching [risk_profiles.<key>] entry exists.
+        let agent = AliasedAgentConfig {
+            enabled: true,
+            risk_profile: "definitely_not_configured".to_string(),
+            ..AliasedAgentConfig::default()
+        };
+        config.agents.insert("fake123".to_string(), agent);
+
+        let handle =
+            tokio::spawn(
+                async move { run_gateway("127.0.0.1", 0, config, None, None, None).await },
+            );
+
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(750),
+            &mut Box::pin(async {
+                let _ = tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }),
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(_) => panic!("test setup timed out before checking gateway state"),
+        }
+
+        if handle.is_finished() {
+            let result = handle.await.expect("task did not panic");
+            panic!(
+                "gateway exited during boot when agent.risk_profile was unresolved \
+                 — must stay up so operator can fix via /admin/reload or /onboard: {:?}",
                 result
             );
         }
