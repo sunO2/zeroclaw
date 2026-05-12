@@ -410,6 +410,14 @@ impl V2Config {
         //     warning on every restart.
         backfill_heartbeat_agent(&mut passthrough);
 
+        // 8b. peer_groups.<X>.agents fixup: step 7 synthesized peer_groups
+        //     from channel allow-lists with the bridge alias `"default"` as
+        //     the agent. If step 8 ended up with named V2 agents (no
+        //     `agents.default`), the bridge alias is dangling. Rewrite each
+        //     synthesized `agents = ["default"]` to point at the actual
+        //     agent alias that was synthesized / preserved.
+        rewrite_dangling_peer_group_agents(&mut passthrough);
+
         // 9. Qualify bare-`provider` keys on tables whose V3 schema renamed
         //    them to a domain-qualified noun. The V2 grammar wrote
         //    `[tunnel] provider = "cloudflare"` and `[web_search] provider
@@ -771,6 +779,16 @@ fn alias_provider_models(models: Option<toml::Value>) -> toml::Table {
                 .or_insert(toml::Value::String(url));
         }
 
+        // V2 per-block `base_url` + optional `api_path` → V3 `uri` (full
+        // endpoint URL). Matches the same concatenation
+        // `fold_providers_globals_into_models` applies to V2 top-level
+        // globals — without this, per-block [model_providers.<id>] entries
+        // would survive into V3 with the unknown `base_url`/`api_path`
+        // keys, and V3 deserialize silently drops them.
+        if let toml::Value::Table(t) = &mut config {
+            fold_base_url_api_path_into_uri(t);
+        }
+
         let (provider_type, alias, extras) = normalize_provider_type(&raw_type, "default");
 
         // Inject family-specific extras (endpoint, auth_mode, wire_api,
@@ -1128,9 +1146,10 @@ fn alias_wrap_channels(channels_value: toml::Value, peer_groups: &mut toml::Tabl
         };
         apply_v2_to_v3_channel_folds(ct, &mut instance);
         fold_channel_peer_auth_into_peer_groups(ct, &mut instance, peer_groups);
-        if !drain_enabled_keep(ct, &mut instance) {
-            continue;
-        }
+        // V3 keeps the `enabled` field on every channel config — V2's
+        // boolean ports through verbatim and the orchestrator gates on
+        // it at registration time. Missing `enabled` deserializes to
+        // `false` via `#[serde(default)]`, matching V2 semantics.
         let mut wrapped = toml::Table::new();
         wrapped.insert("default".to_string(), toml::Value::Table(instance));
         new_channels.insert((*ct).to_string(), toml::Value::Table(wrapped));
@@ -1418,42 +1437,6 @@ fn fold_channel_peer_auth_into_peer_groups(
     }
 }
 
-/// **T7**: V3 removed `enabled: bool` from every channel config. V2's default
-/// was `false`; activation in V3 is implicit by HashMap presence. Strip
-/// `enabled` from the instance and decide whether the channel survives:
-///
-/// - `enabled = true` → keep, no log.
-/// - `enabled = false` → drop, log naming the channel type.
-/// - `enabled` missing → drop (V2 default false), log.
-/// - `enabled` non-bool → keep (treat as "configured"), log the unexpected
-///   type rather than dropping data.
-fn drain_enabled_keep(channel_type: &str, instance: &mut toml::Table) -> bool {
-    match instance.remove("enabled") {
-        Some(toml::Value::Boolean(true)) => true,
-        Some(toml::Value::Boolean(false)) => {
-            tracing::info!(
-                target: "migration",
-                "channels.{channel_type} dropped (V2 enabled=false; V3 has no off-switch other than absence)"
-            );
-            false
-        }
-        Some(other) => {
-            tracing::info!(
-                target: "migration",
-                "channels.{channel_type}.enabled was {other:?} (non-bool); treating as enabled for V3"
-            );
-            true
-        }
-        None => {
-            tracing::info!(
-                target: "migration",
-                "channels.{channel_type} dropped (V2 enabled defaulted to false; V3 has no off-switch other than absence)"
-            );
-            false
-        }
-    }
-}
-
 /// Strip V2-specific fields from each agent and synthesize the V3 alias
 /// references / per-agent runtime overrides.
 ///
@@ -1708,6 +1691,139 @@ fn merge_into_table(top: &mut toml::Table, section: &str, extras: toml::Table) {
         for (k, v) in extras {
             section_table.insert(k, v);
         }
+    }
+}
+
+/// Fold V2 `base_url` (+ optional `api_path`) into V3 `uri` on a single
+/// `[model_providers.<type>.<alias>]` entry table. No-op when `uri` is
+/// already set (operator wins) or when `base_url` is absent. Matches the
+/// top-level-globals fold so both V1/V2 entry points produce the same
+/// V3 shape.
+fn fold_base_url_api_path_into_uri(entry: &mut toml::Table) {
+    if entry.contains_key("uri") {
+        // Operator-set V3 key wins; drop stale V2 spellings so V3
+        // deserialize doesn't see unknown fields.
+        entry.remove("base_url");
+        entry.remove("api_path");
+        return;
+    }
+    let base = match entry.remove("base_url") {
+        Some(toml::Value::String(s)) if !s.is_empty() => s,
+        _ => {
+            // No base_url to fold. api_path alone has nowhere to live.
+            entry.remove("api_path");
+            return;
+        }
+    };
+    let path = match entry.remove("api_path") {
+        Some(toml::Value::String(p)) if !p.is_empty() => Some(p),
+        _ => None,
+    };
+    let uri = match path {
+        Some(p) => {
+            let trimmed = base.trim_end_matches('/');
+            let suffix = if p.starts_with('/') {
+                p
+            } else {
+                format!("/{p}")
+            };
+            format!("{trimmed}{suffix}")
+        }
+        None => base,
+    };
+    entry.insert("uri".to_string(), toml::Value::String(uri));
+}
+
+/// Rewrite any `peer_groups.<X>.agents = ["default"]` entries to point at
+/// a real agent alias when `agents.default` doesn't exist. Step 7
+/// synthesizes peer_groups with the bridge alias `"default"` before
+/// step 8 decides what the actual agent map looks like; this post-pass
+/// patches up the dangling reference in the multi-agent V2 case where
+/// `agents.default` is never created.
+///
+/// Also injects the peer_group's channel ref into the chosen agent's
+/// `channels` list. V3 validation rejects an agent listed in a peer_group
+/// for a channel it doesn't own (`agents.<X>.channels` must contain the
+/// peer_group's channel); V2 had no per-agent channel binding, so the
+/// migration extends the chosen agent's reach to cover what V2's implicit
+/// single-agent semantics expected.
+///
+/// No-op when `agents.default` exists (the bridge alias is valid) or
+/// when the agents map is empty (no fix possible — the operator will
+/// hit a different validation error). Operator-authored peer_groups
+/// whose agents list isn't exactly `["default"]` are left untouched.
+fn rewrite_dangling_peer_group_agents(passthrough: &mut toml::Table) {
+    let replacement_alias = {
+        let Some(agents_table) = passthrough.get("agents").and_then(toml::Value::as_table) else {
+            return;
+        };
+        if agents_table.is_empty() || agents_table.contains_key("default") {
+            return;
+        }
+        let Some(alias) = agents_table.keys().next().cloned() else {
+            return;
+        };
+        alias
+    };
+
+    let mut rewritten_channels: Vec<String> = Vec::new();
+    {
+        let Some(toml::Value::Table(peer_groups)) = passthrough.get_mut("peer_groups") else {
+            return;
+        };
+        for (group_name, group_value) in peer_groups.iter_mut() {
+            let Some(group_table) = group_value.as_table_mut() else {
+                continue;
+            };
+            let Some(toml::Value::Array(agents_arr)) = group_table.get("agents") else {
+                continue;
+            };
+            let only_default = agents_arr.len() == 1 && agents_arr[0].as_str() == Some("default");
+            if !only_default {
+                continue;
+            }
+            group_table.insert(
+                "agents".to_string(),
+                toml::Value::Array(vec![toml::Value::String(replacement_alias.clone())]),
+            );
+            if let Some(toml::Value::String(channel_ref)) = group_table.get("channel") {
+                rewritten_channels.push(channel_ref.clone());
+            }
+            tracing::info!(
+                target: "migration",
+                "peer_groups.{group_name}.agents rewritten from [\"default\"] to [{replacement_alias:?}] (no agents.default exists)"
+            );
+        }
+    }
+
+    if rewritten_channels.is_empty() {
+        return;
+    }
+    let Some(toml::Value::Table(agents_table)) = passthrough.get_mut("agents") else {
+        return;
+    };
+    let Some(toml::Value::Table(agent_entry)) = agents_table.get_mut(&replacement_alias) else {
+        return;
+    };
+    let channels_array = agent_entry
+        .entry("channels".to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let Some(channels_arr) = channels_array.as_array_mut() else {
+        return;
+    };
+    let mut added: Vec<String> = Vec::new();
+    for ch in &rewritten_channels {
+        let present = channels_arr.iter().any(|v| v.as_str() == Some(ch.as_str()));
+        if !present {
+            channels_arr.push(toml::Value::String(ch.clone()));
+            added.push(ch.clone());
+        }
+    }
+    if !added.is_empty() {
+        tracing::info!(
+            target: "migration",
+            "agents.{replacement_alias}.channels extended with {added:?} so the rewritten peer_groups resolve"
+        );
     }
 }
 
@@ -2003,6 +2119,7 @@ fn rename_route_provider_field(new_providers: &mut toml::Table, routes_key: &str
         return;
     };
     let mut renamed = 0usize;
+    let mut promoted = 0usize;
     for entry in routes.iter_mut() {
         let toml::Value::Table(t) = entry else {
             continue;
@@ -2012,17 +2129,32 @@ fn rename_route_provider_field(new_providers: &mut toml::Table, routes_key: &str
             // or migration ran twice). Drop a stray `provider` if present
             // so downstream serde doesn't trip on an unknown field.
             t.remove("provider");
-            continue;
-        }
-        if let Some(value) = t.remove("provider") {
+        } else if let Some(value) = t.remove("provider") {
             t.insert("model_provider".to_string(), value);
             renamed += 1;
+        }
+        // V3's `model_provider` is a dotted alias (`<type>.<alias>`). V2
+        // wrote a bare provider type (e.g. `"openai"`); promote it to
+        // `"openai.default"` so V3 deserialize and the dangling-reference
+        // validator both see a real `model_providers.<type>.<alias>` ref.
+        if let Some(toml::Value::String(s)) = t.get_mut("model_provider")
+            && !s.is_empty()
+            && !s.contains('.')
+        {
+            *s = format!("{s}.default");
+            promoted += 1;
         }
     }
     if renamed > 0 {
         tracing::info!(
             target: "migration",
             "[providers.{routes_key}] {renamed} entry/entries: `provider` field renamed to `model_provider`"
+        );
+    }
+    if promoted > 0 {
+        tracing::info!(
+            target: "migration",
+            "[providers.{routes_key}] {promoted} entry/entries: bare `model_provider` promoted to dotted `<type>.default` form"
         );
     }
 }

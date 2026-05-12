@@ -4895,6 +4895,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("telegram.{alias}")) {
             continue;
         }
+        if !tg.enabled {
+            continue;
+        }
         let ack = tg.ack_reactions.unwrap_or(config.channels.ack_reactions);
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
@@ -4925,6 +4928,9 @@ fn collect_configured_channels(
 
     for (alias, dc) in &config.channels.discord {
         if !active_channel_aliases.contains(&format!("discord.{alias}")) {
+            continue;
+        }
+        if !dc.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -4971,6 +4977,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("slack.{alias}")) {
             continue;
         }
+        if !sl.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5004,6 +5013,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("mattermost.{alias}")) {
             continue;
         }
+        if !mm.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5033,6 +5045,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("imessage.{alias}")) {
             continue;
         }
+        if !im.enabled {
+            continue;
+        }
         let _ = im;
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
@@ -5048,6 +5063,9 @@ fn collect_configured_channels(
     #[cfg(feature = "channel-matrix")]
     for (alias, mx) in &config.channels.matrix {
         if !active_channel_aliases.contains(&format!("matrix.{alias}")) {
+            continue;
+        }
+        if !mx.enabled {
             continue;
         }
         let state_dir = config
@@ -5088,6 +5106,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("signal.{alias}")) {
             continue;
         }
+        if !sig.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5114,6 +5135,9 @@ fn collect_configured_channels(
 
     for (alias, wa) in &config.channels.whatsapp {
         if !active_channel_aliases.contains(&format!("whatsapp.{alias}")) {
+            continue;
+        }
+        if !wa.enabled {
             continue;
         }
         if wa.is_ambiguous_config() {
@@ -5198,6 +5222,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("linq.{alias}")) {
             continue;
         }
+        if !lq.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5216,6 +5243,9 @@ fn collect_configured_channels(
 
     for (alias, wati_cfg) in &config.channels.wati {
         if !active_channel_aliases.contains(&format!("wati.{alias}")) {
+            continue;
+        }
+        if !wati_cfg.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -5240,6 +5270,9 @@ fn collect_configured_channels(
 
     for (alias, nc) in &config.channels.nextcloud_talk {
         if !active_channel_aliases.contains(&format!("nextcloud_talk.{alias}")) {
+            continue;
+        }
+        if !nc.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -5269,6 +5302,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("email.{alias}")) {
             continue;
         }
+        if !email_cfg.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5289,6 +5325,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("gmail_push.{alias}")) {
             continue;
         }
+        if !gp_cfg.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5306,6 +5345,9 @@ fn collect_configured_channels(
 
     for (alias, irc) in &config.channels.irc {
         if !active_channel_aliases.contains(&format!("irc.{alias}")) {
+            continue;
+        }
+        if !irc.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -5337,6 +5379,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("lark.{alias}")) {
             continue;
         }
+        if !lk.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5362,6 +5407,9 @@ fn collect_configured_channels(
     #[cfg(feature = "channel-line")]
     for (alias, ln) in &config.channels.line {
         if !active_channel_aliases.contains(&format!("line.{alias}")) {
+            continue;
+        }
+        if !ln.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -5390,6 +5438,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("dingtalk.{alias}")) {
             continue;
         }
+        if !dt.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5411,6 +5462,9 @@ fn collect_configured_channels(
 
     for (alias, qq) in &config.channels.qq {
         if !active_channel_aliases.contains(&format!("qq.{alias}")) {
+            continue;
+        }
+        if !qq.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -5437,6 +5491,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("twitter.{alias}")) {
             continue;
         }
+        if !tw.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5454,6 +5511,9 @@ fn collect_configured_channels(
 
     for (alias, mc) in &config.channels.mochat {
         if !active_channel_aliases.contains(&format!("mochat.{alias}")) {
+            continue;
+        }
+        if !mc.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -5477,6 +5537,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("wecom.{alias}")) {
             continue;
         }
+        if !wc.enabled {
+            continue;
+        }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
             let cfg_arc = config_arc.clone();
             let alias = alias.clone();
@@ -5495,6 +5558,9 @@ fn collect_configured_channels(
     #[cfg(feature = "channel-wechat")]
     for (alias, wechat) in &config.channels.wechat {
         if !active_channel_aliases.contains(&format!("wechat.{alias}")) {
+            continue;
+        }
+        if !wechat.enabled {
             continue;
         }
         let peer_resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync> = {
@@ -5540,6 +5606,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("clawdtalk.{alias}")) {
             continue;
         }
+        if !ct.enabled {
+            continue;
+        }
         channels.push(ConfiguredChannel {
             display_name: "ClawdTalk",
             channel: Arc::new(ClawdTalkChannel::new(ct.clone())),
@@ -5575,6 +5644,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("reddit.{alias}")) {
             continue;
         }
+        if !rd.enabled {
+            continue;
+        }
         channels.push(ConfiguredChannel {
             display_name: "Reddit",
             channel: Arc::new(RedditChannel::new(
@@ -5591,6 +5663,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("bluesky.{alias}")) {
             continue;
         }
+        if !bs.enabled {
+            continue;
+        }
         channels.push(ConfiguredChannel {
             display_name: "Bluesky",
             channel: Arc::new(BlueskyChannel::new(
@@ -5603,6 +5678,9 @@ fn collect_configured_channels(
     #[cfg(feature = "voice-wake")]
     for (alias, vw) in &config.channels.voice_wake {
         if !active_channel_aliases.contains(&format!("voice_wake.{alias}")) {
+            continue;
+        }
+        if !vw.enabled {
             continue;
         }
         channels.push(ConfiguredChannel {
@@ -5619,6 +5697,9 @@ fn collect_configured_channels(
         if !active_channel_aliases.contains(&format!("voice_call.{alias}")) {
             continue;
         }
+        if !vc.enabled {
+            continue;
+        }
         channels.push(ConfiguredChannel {
             display_name: "Voice Call",
             channel: Arc::new(VoiceCallChannel::new(vc.clone())),
@@ -5627,6 +5708,9 @@ fn collect_configured_channels(
 
     for (alias, wh) in &config.channels.webhook {
         if !active_channel_aliases.contains(&format!("webhook.{alias}")) {
+            continue;
+        }
+        if !wh.enabled {
             continue;
         }
         channels.push(ConfiguredChannel {
@@ -12226,6 +12310,7 @@ This is an example JSON object for profile settings."#;
         config.channels.mattermost.insert(
             "default".to_string(),
             zeroclaw_config::schema::MattermostConfig {
+                enabled: true,
                 url: "https://mattermost.example.com".to_string(),
                 bot_token: Some("test-token".to_string()),
                 login_id: None,
@@ -13461,6 +13546,7 @@ This is an example JSON object for profile settings."#;
         config.channels.telegram.insert(
             "default".to_string(),
             zeroclaw_config::schema::TelegramConfig {
+                enabled: true,
                 bot_token: "test-token".to_string(),
                 stream_mode: zeroclaw_config::schema::StreamMode::Off,
                 draft_update_interval_ms: 1000,
@@ -13503,6 +13589,7 @@ This is an example JSON object for profile settings."#;
         config.channels.voice_call.insert(
             "default".to_string(),
             zeroclaw_config::scattered_types::VoiceCallConfig {
+                enabled: true,
                 model_provider: zeroclaw_config::scattered_types::VoiceProvider::Twilio,
                 account_id: "AC_TEST".to_string(),
                 auth_token: "test_token".to_string(),

@@ -1136,6 +1136,7 @@ mod tests {
         config.channels.telegram.insert(
             "default".to_string(),
             zeroclaw_config::schema::TelegramConfig {
+                enabled: true,
                 bot_token: "token".into(),
                 stream_mode: zeroclaw_config::schema::StreamMode::default(),
                 draft_update_interval_ms: 1000,
@@ -1156,6 +1157,7 @@ mod tests {
         config.channels.dingtalk.insert(
             "default".to_string(),
             zeroclaw_config::schema::DingTalkConfig {
+                enabled: true,
                 client_id: "client_id".into(),
                 client_secret: "client_secret".into(),
                 proxy_url: None,
@@ -1171,6 +1173,7 @@ mod tests {
         config.channels.mattermost.insert(
             "default".to_string(),
             zeroclaw_config::schema::MattermostConfig {
+                enabled: true,
                 url: "https://mattermost.example.com".into(),
                 bot_token: Some("token".into()),
                 login_id: None,
@@ -1192,6 +1195,7 @@ mod tests {
         config.channels.qq.insert(
             "default".to_string(),
             zeroclaw_config::schema::QQConfig {
+                enabled: true,
                 app_id: "app-id".into(),
                 app_secret: "app-secret".into(),
                 proxy_url: None,
@@ -1207,6 +1211,7 @@ mod tests {
         config.channels.nextcloud_talk.insert(
             "default".to_string(),
             zeroclaw_config::schema::NextcloudTalkConfig {
+                enabled: true,
                 base_url: "https://cloud.example.com".into(),
                 app_token: "app-token".into(),
                 webhook_secret: None,
@@ -1226,6 +1231,7 @@ mod tests {
         config.channels.webhook.insert(
             "default".to_string(),
             zeroclaw_config::schema::WebhookConfig {
+                enabled: true,
                 port: 8080,
                 listen_path: None,
                 send_url: None,
@@ -1299,6 +1305,7 @@ mod tests {
         config.channels.telegram.insert(
             "default".to_string(),
             zeroclaw_config::schema::TelegramConfig {
+                enabled: true,
                 bot_token: "bot-token".into(),
                 stream_mode: zeroclaw_config::schema::StreamMode::default(),
                 draft_update_interval_ms: 1000,
@@ -1324,6 +1331,7 @@ mod tests {
         config.channels.telegram.insert(
             "default".to_string(),
             zeroclaw_config::schema::TelegramConfig {
+                enabled: true,
                 bot_token: "bot-token".into(),
                 stream_mode: zeroclaw_config::schema::StreamMode::default(),
                 draft_update_interval_ms: 1000,

@@ -44,7 +44,7 @@ mod tests {
             tunnel_provider: "wireguard".into(),
             ..TunnelConfig::default()
         };
-        assert_tunnel_err(&cfg, "Unknown tunnel model_provider");
+        assert_tunnel_err(&cfg, "Unknown tunnel_provider");
     }
 
     #[test]

@@ -1002,6 +1002,7 @@ mod tests {
     #[test]
     fn email_config_serialize_deserialize() {
         let config = EmailConfig {
+            enabled: true,
             imap_host: "imap.example.com".to_string(),
             imap_port: 993,
             imap_folder: "INBOX".to_string(),
@@ -1093,6 +1094,7 @@ mod tests {
     #[test]
     fn idle_timeout_propagates_to_channel() {
         let config = EmailConfig {
+            enabled: true,
             idle_timeout_secs: 600,
             ..Default::default()
         };
@@ -1103,6 +1105,7 @@ mod tests {
     #[test]
     fn email_config_debug_output() {
         let config = EmailConfig {
+            enabled: true,
             imap_host: "imap.debug.com".to_string(),
             ..Default::default()
         };

@@ -1061,6 +1061,7 @@ mod tests {
     #[test]
     fn config_serialize_roundtrip() {
         let config = GmailPushConfig {
+            enabled: true,
             topic: "projects/test/topics/gmail".into(),
             label_filter: vec!["INBOX".into(), "IMPORTANT".into()],
             oauth_token: "test-token".into(),

@@ -1,9 +1,9 @@
 //! End-to-end migration tests for the V1 → V2 → V3 chain.
 //!
-//! Sole input: `tests/fixtures/v1.toml`, embedded via `include_str!` so it
-//! lives only in the test binary. No fixture files for V2 or V3 — V2/V3
-//! shape is asserted via typed deserialization (`Config`) and `toml::Value`
-//! navigation on the migration output.
+//! Sole input: `fixtures/v1.toml` at the crate root, embedded via
+//! `include_str!` so it lives only in the test/cli binary. No fixture
+//! files for V2 or V3 — V2/V3 shape is asserted via typed deserialization
+//! (`Config`) and `toml::Value` navigation on the migration output.
 //!
 //! One test per transform listed in the plan's Step 0 ground truth. Each
 //! test asserts the destination value present in V3 output; if the migration
@@ -16,7 +16,7 @@ use zeroclaw_config::migration::{
 use zeroclaw_config::schema::Config;
 use zeroclaw_config::schema::v2::V2Config;
 
-const V1_FIXTURE: &str = include_str!("fixtures/v1.toml");
+const V1_FIXTURE: &str = include_str!("../fixtures/v1.toml");
 
 fn v3_config() -> Config {
     migrate_to_current(V1_FIXTURE).expect("V1 fixture migrates to current schema")
@@ -276,47 +276,54 @@ fn t6_signal_group_id_folds_into_group_ids() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// T7 — channel `enabled` semantics
+// T7 — channel `enabled` semantics. V3 keeps the V2 boolean on the
+// channel config; the runtime gates registration on `cfg.enabled` and
+// the migration ports the value through verbatim so an operator's
+// "configured but parked" channel survives migration.
 // ─────────────────────────────────────────────────────────────
 
 #[test]
-fn t7_enabled_false_channel_dropped() {
+fn t7_enabled_false_channel_preserved() {
     let cfg = v3_config();
+    let webhook = cfg
+        .channels
+        .webhook
+        .get("default")
+        .expect("V2 webhook with enabled=false survives into V3 channels.webhook.default");
     assert!(
-        cfg.channels.webhook.is_empty(),
-        "V2 webhook with enabled=false must be dropped from V3 channels.webhook \
-         (V3 has no off-switch other than absence); got {:?}",
-        cfg.channels.webhook.keys().collect::<Vec<_>>()
+        !webhook.enabled,
+        "V2 enabled=false must round-trip into V3 channels.webhook.default.enabled = false; \
+         the orchestrator gates registration, not the migration"
     );
 }
 
 #[test]
-fn t7_enabled_unset_channel_dropped() {
+fn t7_enabled_unset_defaults_to_false() {
     let cfg = v3_config();
+    let imessage =
+        cfg.channels.imessage.get("default").expect(
+            "V2 imessage block (peer-auth fields folded into peer_groups) survives into V3",
+        );
     assert!(
-        cfg.channels.imessage.is_empty(),
-        "V2 imessage without explicit enabled must be dropped (defaulted to false); \
-         got {:?}",
-        cfg.channels.imessage.keys().collect::<Vec<_>>()
+        !imessage.enabled,
+        "V2 missing `enabled` deserializes to V3 enabled = false (matches V2 default)"
     );
 }
 
 #[test]
-fn t7_enabled_field_stripped_from_surviving_instance() {
-    // V3 channel configs have no `enabled` field; the migration must strip it
-    // before alias-wrapping. We assert by checking the raw migrated TOML.
-    let value = v3_value();
-    let matrix_default = value
-        .get("channels")
-        .and_then(toml::Value::as_table)
-        .and_then(|t| t.get("matrix"))
-        .and_then(toml::Value::as_table)
-        .and_then(|t| t.get("default"))
-        .and_then(toml::Value::as_table)
-        .expect("channels.matrix.default in migrated TOML");
+fn t7_enabled_field_preserved_on_surviving_instance() {
+    // V3 keeps the `enabled` field on every channel config. Matrix in
+    // the V1 fixture has enabled = true; migration ports the value
+    // through verbatim and the typed config exposes it.
+    let cfg = v3_config();
+    let matrix_default = cfg
+        .channels
+        .matrix
+        .get("default")
+        .expect("channels.matrix.default in migrated config");
     assert!(
-        !matrix_default.contains_key("enabled"),
-        "V2 enabled field must be stripped from surviving V3 channel instances"
+        matrix_default.enabled,
+        "V2 enabled = true must port through to V3 channels.matrix.default.enabled"
     );
 }
 
@@ -1273,7 +1280,10 @@ model_provider = "openai.default"
         .iter()
         .find(|r| r.hint == "vision")
         .expect("vision route");
-    assert_eq!(vision.model_provider, "openai");
+    assert_eq!(
+        vision.model_provider, "openai.default",
+        "bare V2 `provider = openai` must be promoted to dotted V3 `openai.default`"
+    );
     assert_eq!(vision.model, "gpt-4-vision");
 
     let fast = cfg
@@ -1281,7 +1291,7 @@ model_provider = "openai.default"
         .iter()
         .find(|r| r.hint == "fast")
         .expect("fast route");
-    assert_eq!(fast.model_provider, "groq");
+    assert_eq!(fast.model_provider, "groq.default");
     assert_eq!(fast.model, "llama-3.1-8b-instant");
 }
 
@@ -1309,7 +1319,10 @@ model_provider = "openai.default"
         .iter()
         .find(|r| r.hint == "semantic")
         .expect("semantic route");
-    assert_eq!(semantic.model_provider, "openai");
+    assert_eq!(
+        semantic.model_provider, "openai.default",
+        "bare V2 `provider = openai` must be promoted to dotted V3 `openai.default`"
+    );
     assert_eq!(semantic.model, "text-embedding-3-small");
     assert_eq!(semantic.dimensions, Some(1536));
 }
@@ -1340,7 +1353,10 @@ model_provider = "openai.default"
         .iter()
         .find(|r| r.hint == "vision")
         .expect("vision route");
-    assert_eq!(vision.model_provider, "openai");
+    assert_eq!(
+        vision.model_provider, "openai.default",
+        "bare model_provider value is promoted to dotted form regardless of source field name"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1657,15 +1673,29 @@ enabled = false
 
 #[test]
 fn v2_channels_mqtt_block_alias_wraps() {
+    // V3 preserves disabled channel blocks rather than dropping them, so
+    // the test config has to satisfy MqttConfig's required `broker_url` /
+    // `client_id` fields — a parked channel still has to deserialize.
     let raw = r#"
 default_provider = "openai"
 default_model = "gpt-4o-mini"
 
 [channels_config.mqtt]
 enabled = false
+broker_url = "mqtt://localhost:1883"
+client_id = "parked-test-client"
 "#;
     let cfg = migrate_to_current(raw).expect("mqtt flat V2 block must alias-wrap");
     assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+    let mqtt = cfg
+        .channels
+        .mqtt
+        .get("default")
+        .expect("parked mqtt block survives V2→V3 migration");
+    assert!(
+        !mqtt.enabled,
+        "operator's enabled = false ports through verbatim"
+    );
 }
 
 #[test]

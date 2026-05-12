@@ -227,6 +227,7 @@ mod tests {
         config.channels.telegram.insert(
             "default".to_string(),
             TelegramConfig {
+                enabled: true,
                 bot_token: "123:ABC".into(),
                 stream_mode: StreamMode::default(),
                 draft_update_interval_ms: 1000,
@@ -259,6 +260,7 @@ mod tests {
         config.channels.imessage.insert(
             "default".to_string(),
             IMessageConfig {
+                enabled: true,
                 excluded_tools: vec![],
             },
         );
@@ -283,6 +285,7 @@ mod tests {
         config.channels.matrix.insert(
             "default".to_string(),
             MatrixConfig {
+                enabled: true,
                 homeserver: "https://m.org".into(),
                 access_token: Some("tok".into()),
                 user_id: None,

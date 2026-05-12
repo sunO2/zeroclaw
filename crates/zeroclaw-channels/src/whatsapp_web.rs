@@ -1552,6 +1552,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -1571,6 +1572,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -1591,6 +1593,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test.db".into()),
             mention_only,
             self_chat_mode,
@@ -1611,6 +1614,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test.db".into()),
             mention_only,
             self_chat_mode,
@@ -1627,6 +1631,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -1646,6 +1651,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -1665,6 +1671,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -1780,6 +1787,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -1888,6 +1896,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -1910,6 +1919,7 @@ mod tests {
         let mention_only = false;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test-whatsapp.db".into()),
             mention_only,
             self_chat_mode,
@@ -2096,6 +2106,7 @@ mod tests {
         let mention_only = true;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test.db".into()),
             pair_phone: Some("919211916069".into()),
             mention_only,
@@ -2116,6 +2127,7 @@ mod tests {
         let mention_only = true;
         let self_chat_mode = false;
         let cfg = zeroclaw_config::schema::WhatsAppConfig {
+            enabled: true,
             session_path: Some("/tmp/test.db".into()),
             mention_only,
             self_chat_mode,

@@ -348,6 +348,12 @@ fn default_max_attachment_bytes() -> usize {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "channels.email"]
 pub struct EmailConfig {
+    /// Whether this channel is active. The runtime only loads channels whose
+    /// `enabled = true`. Default: `false` so an operator who pastes a partial
+    /// `[channels.<type>.<alias>]` block doesn't accidentally bring a channel
+    /// live before the rest of its config is filled in.
+    #[serde(default)]
+    pub enabled: bool,
     pub imap_host: String,
     #[serde(default = "default_imap_port")]
     pub imap_port: u16,
@@ -391,6 +397,7 @@ impl ChannelConfig for EmailConfig {
 impl Default for EmailConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             imap_host: String::new(),
             imap_port: default_imap_port(),
             imap_folder: default_imap_folder(),
@@ -417,6 +424,12 @@ fn default_label_filter() -> Vec<String> {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "channels.gmail"]
 pub struct GmailPushConfig {
+    /// Whether this channel is active. The runtime only loads channels whose
+    /// `enabled = true`. Default: `false` so an operator who pastes a partial
+    /// `[channels.<type>.<alias>]` block doesn't accidentally bring a channel
+    /// live before the rest of its config is filled in.
+    #[serde(default)]
+    pub enabled: bool,
     pub topic: String,
     #[serde(default = "default_label_filter")]
     pub label_filter: Vec<String>,
@@ -446,6 +459,7 @@ impl ChannelConfig for GmailPushConfig {
 impl Default for GmailPushConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             topic: String::new(),
             label_filter: default_label_filter(),
             oauth_token: String::new(),
@@ -460,6 +474,12 @@ impl Default for GmailPushConfig {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "channels.clawdtalk"]
 pub struct ClawdTalkConfig {
+    /// Whether this channel is active. The runtime only loads channels whose
+    /// `enabled = true`. Default: `false` so an operator who pastes a partial
+    /// `[channels.<type>.<alias>]` block doesn't accidentally bring a channel
+    /// live before the rest of its config is filled in.
+    #[serde(default)]
+    pub enabled: bool,
     #[secret]
     pub api_key: String,
     pub connection_id: String,
@@ -521,6 +541,12 @@ fn default_max_call_duration() -> u64 {
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
 #[prefix = "channels.voice-call"]
 pub struct VoiceCallConfig {
+    /// Whether this channel is active. The runtime only loads channels whose
+    /// `enabled = true`. Default: `false` so an operator who pastes a partial
+    /// `[channels.<type>.<alias>]` block doesn't accidentally bring a channel
+    /// live before the rest of its config is filled in.
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default)]
     pub model_provider: VoiceProvider,
     pub account_id: String,
@@ -548,6 +574,7 @@ pub struct VoiceCallConfig {
 impl Default for VoiceCallConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             model_provider: VoiceProvider::default(),
             account_id: String::new(),
             auth_token: String::new(),
