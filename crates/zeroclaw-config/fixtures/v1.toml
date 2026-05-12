@@ -1,0 +1,920 @@
+# Canonical V1 fixture for the V1 → V2 → V3 migration chain.
+#
+# Hand-authored to exercise every typed transformation in `V1Config`
+# (api_key/api_url/api_path/default_provider/default_model/
+# default_temperature/provider_timeout_secs/provider_max_tokens/
+# extra_headers/model_providers/model_routes/embedding_routes/
+# channels_config) and every V2 → V3 transform in `V2Config`
+# (autonomy → risk_profiles, agent → runtime_profiles, cron jobs[]
+# → cron.<alias>, providers.fallback eradicated, providers.models
+# flat → aliased, cost.prices dropped with INFO logs, channels.<type>
+# Option → HashMap, channels.discord_history → discord.archive,
+# inline-brain agent fields → model_providers.<provider>.agent_<id>,
+# allowed_users/contacts/from/numbers/senders/pubkeys → peer_groups,
+# tts.<type> → tts_providers.<type>.default, transcription per-family
+# fold → transcription_providers.<family>.default,
+# memory.{qdrant,postgres,sqlite_open_timeout_secs} →
+# storage.<backend>.default, memory_namespace dropped,
+# storage.provider.config → storage.postgres.default,
+# tunnel.provider → tunnel.tunnel_provider rename,
+# web_search.provider → web_search.search_provider rename,
+# colon-URL providers split, base_url + api_path → uri).
+#
+# Subsystems that V1 carried but V1Config doesn't type explicitly
+# (backup, gateway, proxy, hooks, mcp, etc.) ride through
+# `passthrough` untouched into V3 deserialize.
+
+# ── 12 V1 globals folded into V2 [providers] ───────────────────
+api_key       = "sk-v1-test-global"
+api_url       = "https://api.example.com/v1"
+api_path      = "/chat/completions"
+default_provider = "openai"
+default_model = "gpt-4o-mini"
+default_temperature = 0.5
+provider_timeout_secs = 90
+provider_max_tokens   = 4096
+
+[extra_headers]
+User-Agent   = "ZeroClaw-V1-Test/1.0"
+"X-Title"    = "zeroclaw"
+
+# ── model_providers (V1 flat keys → V3 model_providers.<type>.<alias>) ──
+[model_providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-anthropic"
+
+[model_providers.claude-code]
+# Empty entry — folds under anthropic.claude-code per V3 normalize_provider_type.
+
+[model_providers.openrouter]
+api_key = "sk-or-key"
+model = "google/gemini-2.0-flash"
+
+[model_providers.ollama]
+base_url = "http://localhost:11434"
+model = "llama3.1:8b"
+
+[model_providers.groq]
+api_key = "gsk-groq-key"
+model = "llama-3.1-70b-versatile"
+
+[model_providers.gemini]
+api_key = "gemini-api-key"
+model = "gemini-1.5-pro"
+
+[model_providers.xai]
+api_key = "xai-key"
+model = "grok-2"
+
+[model_providers.openai-codex]
+# Folds under openai.codex with wire_api=responses + requires_openai_auth=true
+requires_openai_auth = true
+model = "gpt-5-codex"
+
+# ── routes ──────────────────────────────────────────────────────
+[[model_routes]]
+hint     = "fast"
+provider = "openai"
+model    = "gpt-4o-mini"
+
+[[model_routes]]
+hint     = "vision"
+provider = "anthropic"
+model    = "claude-3-5-sonnet"
+
+[[embedding_routes]]
+hint       = "semantic"
+provider   = "openai"
+model      = "text-embedding-3-small"
+dimensions = 1536
+
+# ── channels_config (V1 spelling; V2 renames to `channels`) ─────
+[channels_config]
+cli = true
+ack_reactions = true
+message_timeout_secs = 300
+show_tool_calls = false
+session_persistence = true
+session_backend = "sqlite"
+debounce_ms = 0
+
+[channels_config.telegram]
+enabled = true
+bot_token = "telegram-bot-token-v1"
+allowed_users = ["@admin_user"]
+mention_only = false
+stream_mode = "off"
+
+[channels_config.matrix]
+enabled = true
+homeserver = "https://matrix.org"
+access_token = "matrix-bot-token"
+room_id = "!important-room:matrix.org"
+allowed_users = ["@admin:matrix.org"]
+
+[channels_config.slack]
+enabled = true
+bot_token = "xoxb-slack-token"
+app_token = "xapp-slack-token"
+channel_id = "C01ABCD0001"
+
+[channels_config.discord]
+enabled = true
+bot_token = "discord-bot-token-v1"
+guild_id  = "11111"
+allowed_users = ["111", "222"]
+
+[channels_config.discord_history]
+enabled = true
+bot_token = "discord-bot-token-v1"
+channel_ids = ["aaaa", "bbbb"]
+
+[channels_config.mattermost]
+enabled = true
+url = "https://mattermost.example.com"
+bot_token = "mm-bot-token"
+channel_id = "mm-channel-001"
+
+[channels_config.reddit]
+enabled = true
+client_id = "reddit-client-id"
+client_secret = "reddit-client-secret"
+refresh_token = "reddit-refresh-token"
+username = "test-bot"
+subreddit = "rust"
+
+[channels_config.signal]
+enabled = true
+http_url = "http://127.0.0.1:8686"
+account = "+15551234567"
+group_id = "group-abc-001"
+
+[channels_config.webhook]
+enabled = false
+port = 8080
+send_url = "https://disabled.example.com/hook"
+
+[channels_config.imessage]
+allowed_contacts = ["+15555550100"]
+
+[channels_config.whatsapp]
+enabled = true
+access_token = "whatsapp-access-token"
+phone_number_id = "1234567890"
+verify_token = "whatsapp-verify-token"
+app_secret = "whatsapp-app-secret"
+mode = "business"
+allowed_numbers = ["+15551234567"]
+
+[channels_config.linq]
+enabled = true
+api_token = "linq-api-token"
+from_phone = "+15551230000"
+signing_secret = "linq-signing-secret"
+allowed_senders = ["sender@example.com"]
+
+[channels_config.wati]
+enabled = true
+api_token = "wati-api-token"
+api_url = "https://wati.example.com"
+tenant_id = "wati-tenant"
+allowed_numbers = ["+15551234568"]
+
+[channels_config.nextcloud_talk]
+enabled = true
+base_url = "https://nextcloud.example.com"
+app_token = "nextcloud-app-token"
+webhook_secret = "nextcloud-webhook-secret"
+bot_name = "ZeroClaw"
+allowed_users = ["nc-user"]
+
+[channels_config.email]
+enabled = true
+imap_host = "imap.example.com"
+imap_port = 993
+imap_folder = "INBOX"
+smtp_host = "smtp.example.com"
+smtp_port = 587
+smtp_tls = true
+username = "bot@example.com"
+password = "email-password"
+from_address = "bot@example.com"
+allowed_senders = ["alerts@example.com"]
+
+[channels_config.gmail_push]
+enabled = true
+topic = "projects/proj/topics/gmail-notify"
+label_filter = ["INBOX"]
+oauth_token = "gmail-oauth-token"
+webhook_url = "https://example.com/gmail-webhook"
+webhook_secret = "gmail-webhook-secret"
+allowed_senders = ["alerts@example.com"]
+
+[channels_config.irc]
+enabled = true
+server = "irc.libera.chat"
+port = 6697
+nickname = "zcbot"
+username = "zcbot"
+channels = ["#testchannel"]
+nickserv_password = "irc-nickserv-password"
+verify_tls = true
+allowed_users = ["op_user"]
+
+[channels_config.lark]
+enabled = true
+app_id = "lark-app-id"
+app_secret = "lark-app-secret"
+encrypt_key = "lark-encrypt"
+verification_token = "lark-verify"
+allowed_users = ["lark-user"]
+
+[channels_config.line]
+enabled = true
+channel_access_token = "line-access-token"
+channel_secret = "line-secret"
+webhook_port = 8790
+
+[channels_config.dingtalk]
+enabled = true
+client_id = "dingtalk-client-id"
+client_secret = "dingtalk-client-secret"
+allowed_users = ["dingtalk-user"]
+
+[channels_config.wecom]
+enabled = true
+webhook_key = "wecom-webhook-key"
+
+[channels_config.wechat]
+enabled = true
+api_base_url = "http://localhost:8082"
+cdn_base_url = "http://localhost:8082"
+state_dir = "state/wechat"
+
+[channels_config.qq]
+enabled = true
+app_id = "qq-app-id"
+app_secret = "qq-secret"
+allowed_users = ["qq-user"]
+
+[channels_config.twitter]
+enabled = true
+bearer_token = "twitter-bearer-token"
+allowed_users = ["twitter_user"]
+
+[channels_config.mochat]
+enabled = true
+api_url = "https://mochat.example.com"
+api_token = "mochat-api-token"
+poll_interval_secs = 10
+allowed_users = ["mochat-user"]
+
+[channels_config.nostr]
+enabled = true
+private_key = "nsec1examplenostrkeyhex"
+relays = ["wss://relay.example.com"]
+allowed_pubkeys = ["npub1examplepubkey"]
+
+[channels_config.clawdtalk]
+enabled = true
+api_key = "clawdtalk-api-key"
+connection_id = "clawdtalk-connection"
+from_number = "+15551239999"
+allowed_destinations = ["+15551238888"]
+webhook_secret = "clawdtalk-webhook-secret"
+
+[channels_config.bluesky]
+enabled = true
+handle = "bot.bsky.social"
+app_password = "bsky-app-password"
+
+[channels_config.voice_call]
+enabled = true
+account_id = "twilio-acct"
+auth_token = "twilio-auth"
+from_number = "+15551234567"
+webhook_port = 8788
+
+[channels_config.voice_wake]
+enabled = true
+wake_word = "claw"
+silence_timeout_ms = 1500
+energy_threshold = 300
+
+[channels_config.voice_duplex]
+enabled = true
+
+[channels_config.mqtt]
+enabled = true
+broker_url = "mqtt://localhost:1883"
+client_id = "zc-bot"
+topics = ["sensors/#"]
+username = "mqtt-user"
+password = "mqtt-password"
+use_tls = false
+keep_alive_secs = 30
+
+# ── autonomy → risk_profiles.default ──────────────────────────
+[autonomy]
+level = "supervised"
+workspace_only = true
+allowed_commands = ["ls", "git", "cat"]
+forbidden_paths = ["/etc"]
+max_actions_per_hour = 100
+max_cost_per_day_cents = 1000
+require_approval_for_medium_risk = true
+block_high_risk_commands = true
+shell_env_passthrough = ["PATH", "HOME"]
+auto_approve = ["weather"]
+always_ask = []
+allowed_roots = ["~/workspace"]
+non_cli_excluded_tools = ["browser"]
+shell_timeout_secs = 60
+
+# ── agent → runtime_profiles.default ──────────────────────────
+[agent]
+parallel_tools = true
+max_history_messages = 50
+max_context_tokens = 32000
+tool_dispatcher = "auto"
+max_tool_iterations = 10
+
+# ── security.sandbox + security.resources → risk_profiles.default ──
+[security.sandbox]
+enabled = true
+backend = "firejail"
+firejail_args = ["--noroot"]
+
+[security.resources]
+max_memory_mb = 512
+max_cpu_time_seconds = 600
+max_subprocesses = 10
+memory_monitoring = true
+
+# ── cron (jobs[] → cron.<alias>; subsystem knobs → [scheduler]) ──
+[cron]
+enabled = true
+catch_up_on_startup = true
+max_run_history = 50
+
+[[cron.jobs]]
+id = "morning-digest-id"
+name = "Morning Digest"
+job_type = "agent"
+schedule = { kind = "cron", expr = "0 8 * * *" }
+prompt = "Summarize unread messages"
+enabled = true
+
+# ── reliability (V3 drops fallback_providers + model_fallbacks) ──
+[reliability]
+provider_retries = 3
+provider_backoff_ms = 500
+fallback_providers = ["anthropic", "openai"]
+api_keys = []
+channel_initial_backoff_secs = 2
+channel_max_backoff_secs = 60
+scheduler_poll_secs = 15
+scheduler_retries = 2
+
+[reliability.model_fallbacks]
+"gpt-4o" = ["claude-sonnet-4-5", "gpt-4o-mini"]
+
+# ── tts.<type> → tts_providers.<type>.default ─────────────────
+[tts]
+enabled = true
+default_provider = "openai"
+default_voice = "alloy"
+default_format = "mp3"
+max_text_length = 4096
+
+[tts.openai]
+api_key = "sk-tts-openai"
+model = "tts-1-hd"
+speed = 1.0
+
+[tts.elevenlabs]
+api_key = "sk-tts-eleven"
+model_id = "eleven_monolingual_v1"
+stability = 0.5
+similarity_boost = 0.5
+
+[tts.google]
+api_key = "google-tts-key"
+voice = "en-US-Standard-A"
+
+[tts.edge]
+voice = "en-US-AriaNeural"
+
+[tts.piper]
+model_path = "/opt/piper/en_US-amy-medium.onnx"
+
+# ── transcription → transcription_providers.<family>.default ──
+[transcription]
+enabled = true
+default_provider = "groq"
+api_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+api_key = "groq-transcription-key"
+model = "whisper-large-v3-turbo"
+max_duration_secs = 120
+
+[transcription.openai]
+api_key = "openai-stt-key"
+model = "whisper-1"
+
+[transcription.deepgram]
+api_key = "deepgram-key"
+model = "nova-2"
+
+[transcription.assemblyai]
+api_key = "assembly-key"
+model = "best"
+
+# ── memory + storage ──────────────────────────────────────────
+# V2 [memory.qdrant] → V3 [storage.qdrant.default],
+# V2 [memory.postgres] vector fields → V3 [storage.postgres.default],
+# V2 [memory].sqlite_open_timeout_secs → V3 [storage.sqlite.default].open_timeout_secs,
+# V2 [storage.provider.config] → V3 [storage.<backend>.default].
+[memory]
+backend = "qdrant"
+sqlite_open_timeout_secs = 60
+auto_save = true
+hygiene_enabled = true
+archive_after_days = 7
+purge_after_days = 30
+embedding_provider = "none"
+search_mode = "hybrid"
+
+[memory.qdrant]
+url = "http://localhost:6333"
+collection = "zc_memories"
+api_key = "qdrant-api-key"
+
+[memory.postgres]
+host = "pg.example.com"
+port = 5432
+database = "zc_vectors"
+user = "zc"
+password = "pg-password"
+vector_dimensions = 1536
+vector_enabled = true
+
+[storage.provider.config]
+provider = "postgres"
+db_url = "postgres://user:pass@localhost/zc"
+schema = "zeroclaw"
+table = "memories"
+connect_timeout_secs = 30
+
+# ── agents (inline brain → model_providers.<provider>.agent_<id>) ──
+[agents.simple_agent]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[agents.complex_agent]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+api_key = "sk-ant-complex"
+temperature = 0.3
+max_iterations = 25
+max_depth = 4
+agentic = true
+allowed_tools = ["shell", "memory"]
+timeout_secs = 180
+agentic_timeout_secs = 600
+skills_directory = "/opt/zeroclaw/skills"
+memory_namespace = "complex"
+
+# Cost tracking limits: this comment exists solely to verify that comments on a surviving section round-trip through the V1→V2→V3 migration. Asserted by `comment_preserved_on_surviving_key`.
+[cost]
+enabled = true
+daily_limit_usd = 25.0
+monthly_limit_usd = 100.0
+warn_at_percent = 80
+
+[cost.prices."anthropic/claude-sonnet-4-5"]
+input = 3.0
+output = 15.0
+
+[cost.prices."openrouter/gpt-4o-mini"]
+input = 0.15
+output = 0.6
+
+[observability]
+backend = "none"
+runtime_trace_mode = "none"
+runtime_trace_path = "state/runtime-trace.jsonl"
+runtime_trace_max_entries = 200
+
+[trust]
+initial_score = 0.8
+decay_half_life_days = 30.0
+regression_threshold = 0.5
+correction_penalty = 0.05
+success_boost = 0.01
+
+[backup]
+enabled = true
+max_keep = 10
+include_dirs = ["config", "memory", "audit", "knowledge"]
+destination_dir = "state/backups"
+compress = true
+encrypt = false
+
+[data_retention]
+enabled = false
+retention_days = 90
+dry_run = false
+categories = []
+
+[cloud_ops]
+enabled = false
+default_cloud = "aws"
+supported_clouds = ["aws", "azure", "gcp"]
+iac_tools = ["terraform"]
+cost_threshold_monthly_usd = 100.0
+well_architected_frameworks = ["aws-waf"]
+
+[security_ops]
+enabled = false
+playbooks_dir = "~/.zeroclaw/playbooks"
+auto_triage = false
+require_approval_for_actions = true
+max_auto_severity = "low"
+report_output_dir = "~/.zeroclaw/security-reports"
+
+[runtime]
+kind = "native"
+
+[runtime.docker]
+image = "alpine:3.20"
+network = "none"
+memory_limit_mb = 512
+cpu_limit = 1.0
+read_only_rootfs = true
+mount_workspace = true
+allowed_workspace_roots = []
+
+[pacing]
+loop_ignore_tools = []
+loop_detection_enabled = true
+loop_detection_window_size = 20
+loop_detection_max_repeats = 3
+
+[skills]
+open_skills_enabled = false
+allow_scripts = true
+prompt_injection_mode = "full"
+
+[skills.skill_creation]
+enabled = false
+max_skills = 500
+similarity_threshold = 0.85
+
+[skills.skill_improvement]
+enabled = true
+cooldown_secs = 3600
+
+[pipeline]
+enabled = false
+max_steps = 20
+allowed_tools = []
+
+[query_classification]
+enabled = false
+rules = []
+
+[heartbeat]
+enabled = true
+agent = "simple_agent"
+interval_minutes = 30
+two_phase = true
+adaptive = false
+min_interval_minutes = 5
+max_interval_minutes = 120
+deadman_timeout_minutes = 0
+max_run_history = 100
+load_session_context = false
+task_timeout_secs = 600
+
+# `tunnel.provider` is V2; V3 renames the scalar to `tunnel_provider`.
+[tunnel]
+provider = "tailscale"
+
+[tunnel.tailscale]
+funnel = false
+
+[tunnel.cloudflare]
+token = "cf-tunnel-token"
+hostname = "tunnel.example.com"
+
+[gateway]
+port = 42617
+host = "127.0.0.1"
+require_pairing = true
+allow_public_bind = false
+paired_tokens = ["zc_pre_paired_example_token"]
+pair_rate_limit_per_minute = 10
+webhook_rate_limit_per_minute = 60
+trust_forwarded_headers = false
+rate_limit_max_keys = 10000
+idempotency_ttl_secs = 300
+idempotency_max_keys = 10000
+session_persistence = true
+session_ttl_hours = 0
+
+[gateway.pairing_dashboard]
+code_length = 8
+code_ttl_secs = 3600
+max_pending_codes = 3
+max_failed_attempts = 5
+lockout_secs = 300
+
+[composio]
+enabled = false
+api_key = "composio-key"
+entity_id = "default"
+
+[microsoft365]
+enabled = false
+client_id = "ms365-client"
+client_secret = "ms365-secret"
+tenant_id = "ms365-tenant"
+auth_flow = "client_credentials"
+scopes = ["https://graph.microsoft.com/.default"]
+token_cache_encrypted = true
+
+[secrets]
+encrypt = true
+
+[browser]
+enabled = true
+allowed_domains = ["*"]
+backend = "agent_browser"
+native_headless = true
+native_webdriver_url = "http://127.0.0.1:9515"
+
+[browser.computer_use]
+endpoint = "http://127.0.0.1:8787/v1/actions"
+timeout_ms = 15000
+allow_remote_endpoint = false
+window_allowlist = []
+
+[browser_delegate]
+enabled = false
+cli_binary = "claude"
+chrome_profile_dir = ""
+allowed_domains = []
+blocked_domains = []
+task_timeout_secs = 120
+
+[http_request]
+enabled = true
+allowed_domains = ["*"]
+max_response_size = 1000000
+timeout_secs = 30
+allow_private_hosts = false
+
+[multimodal]
+max_images = 4
+max_image_size_mb = 5
+allow_remote_fetch = false
+
+[media_pipeline]
+enabled = false
+transcribe_audio = true
+describe_images = true
+summarize_video = true
+
+[web_fetch]
+enabled = true
+allowed_domains = ["*"]
+blocked_domains = []
+allowed_private_hosts = []
+max_response_size = 500000
+timeout_secs = 30
+
+[web_fetch.firecrawl]
+enabled = false
+api_key_env = "FIRECRAWL_API_KEY"
+api_url = "https://api.firecrawl.dev/v1"
+mode = "scrape"
+
+[link_enricher]
+enabled = false
+max_links = 3
+timeout_secs = 10
+
+[text_browser]
+enabled = false
+timeout_secs = 30
+
+# `web_search.provider` is V2; V3 renames the scalar to `search_provider`.
+[web_search]
+enabled = true
+provider = "duckduckgo"
+max_results = 5
+timeout_secs = 15
+
+[project_intel]
+enabled = false
+default_language = "en"
+report_output_dir = "~/.zeroclaw/project-reports"
+risk_sensitivity = "medium"
+include_git_data = true
+include_jira_data = false
+
+[google_workspace]
+enabled = false
+allowed_services = []
+allowed_operations = []
+rate_limit_per_minute = 60
+timeout_secs = 30
+audit_log = false
+
+[proxy]
+enabled = false
+no_proxy = []
+scope = "zeroclaw"
+services = []
+
+[identity]
+format = "openclaw"
+
+[peripherals]
+enabled = false
+boards = []
+
+[delegate]
+timeout_secs = 120
+agentic_timeout_secs = 300
+
+[hooks]
+enabled = true
+
+[hooks.builtin]
+command_logger = false
+
+[hooks.builtin.webhook_audit]
+enabled = false
+url = ""
+tool_patterns = []
+include_args = false
+max_args_bytes = 4096
+
+[hardware]
+enabled = false
+transport = "None"
+baud_rate = 115200
+workspace_datasheets = false
+
+[mcp]
+enabled = true
+deferred_loading = true
+
+[[mcp.servers]]
+name = "DevContainer"
+command = "npx"
+args = ["-y", "@crunchloop/mcp-devcontainers"]
+transport = "stdio"
+
+[nodes]
+enabled = false
+max_nodes = 16
+
+[onboard_state]
+completed_sections = []
+
+[notion]
+enabled = false
+api_key = "notion-api-key"
+database_id = "notion-database-id"
+poll_interval_secs = 5
+status_property = "Status"
+input_property = "Input"
+result_property = "Result"
+max_concurrent = 4
+recover_stale = true
+
+[jira]
+enabled = false
+base_url = "https://jira.example.com"
+email = "bot@example.com"
+api_token = "jira-api-token"
+allowed_actions = ["get_ticket"]
+timeout_secs = 30
+
+[node_transport]
+enabled = true
+shared_secret = "node-shared-secret"
+max_request_age_secs = 300
+require_https = true
+allowed_peers = []
+mutual_tls = false
+connection_pool_size = 4
+
+[knowledge]
+enabled = false
+db_path = "~/.zeroclaw/knowledge.db"
+max_nodes = 100000
+auto_capture = false
+suggest_on_query = true
+cross_workspace_search = false
+
+[linkedin]
+enabled = false
+api_version = "202602"
+
+[linkedin.content]
+rss_feeds = []
+github_users = []
+github_repos = []
+topics = []
+persona = ""
+instructions = ""
+
+[linkedin.image]
+enabled = false
+providers = ["stability", "imagen", "dalle", "flux"]
+fallback_card = true
+card_accent_color = "#0A66C2"
+temp_dir = "linkedin/images"
+
+[linkedin.image.stability]
+api_key_env = "STABILITY_API_KEY"
+model = "stable-diffusion-xl-1024-v1-0"
+
+[linkedin.image.imagen]
+api_key_env = "GOOGLE_VERTEX_API_KEY"
+project_id_env = "GOOGLE_CLOUD_PROJECT"
+region = "us-central1"
+
+[linkedin.image.dalle]
+api_key_env = "OPENAI_API_KEY"
+model = "dall-e-3"
+size = "1024x1024"
+
+[linkedin.image.flux]
+api_key_env = "FAL_API_KEY"
+model = "fal-ai/flux/schnell"
+
+[image_gen]
+enabled = false
+default_model = "fal-ai/flux/schnell"
+api_key_env = "FAL_API_KEY"
+
+[plugins]
+enabled = false
+plugins_dir = "~/.zeroclaw/plugins"
+auto_discover = false
+max_plugins = 50
+
+[plugins.security]
+signature_mode = "disabled"
+trusted_publisher_keys = []
+
+[verifiable_intent]
+enabled = false
+strictness = "strict"
+
+[claude_code]
+enabled = false
+timeout_secs = 600
+allowed_tools = ["Read", "Edit", "Bash", "Write"]
+max_output_bytes = 2097152
+env_passthrough = []
+
+[claude_code_runner]
+enabled = false
+tmux_prefix = "zc-claude-"
+session_ttl = 3600
+
+[codex_cli]
+enabled = false
+timeout_secs = 600
+max_output_bytes = 2097152
+env_passthrough = []
+
+[gemini_cli]
+enabled = false
+timeout_secs = 600
+max_output_bytes = 2097152
+env_passthrough = []
+
+[opencode_cli]
+enabled = false
+timeout_secs = 600
+max_output_bytes = 2097152
+env_passthrough = []
+
+[sop]
+default_execution_mode = "supervised"
+max_concurrent_total = 4
+approval_timeout_secs = 300
+max_finished_runs = 100
+
+[shell_tool]
+timeout_secs = 60
+
+[my_custom_section]
+custom_field = "preserved-through-chain"
+nested_value = 42

@@ -120,6 +120,170 @@ pub fn migrate_file(input: &str) -> Result<Option<String>> {
     }
 }
 
+/// The canonical V1 fixture, embedded into the binary. Single source of
+/// truth for the migration test suite (`tests/migration.rs`) and for
+/// [`generate`] / the `zeroclaw config generate` CLI command. Hand-authored
+/// to exercise every V1→V2 transformation rule.
+const V1_FIXTURE: &str = include_str!("../fixtures/v1.toml");
+
+/// Options for [`generate`].
+#[derive(Debug, Default, Clone)]
+pub struct GenerateOptions<'a> {
+    /// Encrypt secret-bearing string values in the output. Works at every
+    /// schema version via [`encrypt_secret_strings`], which walks the TOML
+    /// and ChaCha20-Poly1305-encrypts any leaf whose key name appears in
+    /// [`SECRET_KEY_NAMES`].
+    pub encrypt_secrets: bool,
+    /// Directory containing (or to receive) the `.secret_key` used for
+    /// `enc2:` encryption. Required when `encrypt_secrets` is true. The
+    /// key is created with 0o600 permissions if absent — matches how the
+    /// daemon's `SecretStore` behaves on first use.
+    pub secret_store_dir: Option<&'a Path>,
+}
+
+/// Generate a canonical TOML config at `target_version`, derived by
+/// running the V1 fixture forward through the typed migration chain.
+///
+/// `target_version` must be in `1..=CURRENT_SCHEMA_VERSION`. The chain is
+/// the same one used to migrate real on-disk configs — V1 fixture →
+/// `V1Config::migrate` → V2 typed value → `V2Config::migrate` → V3 typed
+/// value — so `generate <n>` shows exactly the shape an operator running
+/// `zeroclaw config migrate` would land on if they started from the V1
+/// fixture.
+///
+/// When [`GenerateOptions::encrypt_secrets`] is set, secret-bearing
+/// string values (api_key, bot_token, access_token, etc. — see
+/// [`SECRET_KEY_NAMES`]) are ChaCha20-Poly1305-encrypted with the
+/// `.secret_key` under `secret_store_dir`. Works at every version.
+pub fn generate(target_version: u32, opts: &GenerateOptions<'_>) -> Result<String> {
+    if target_version == 0 || target_version > CURRENT_SCHEMA_VERSION {
+        anyhow::bail!(
+            "unsupported schema version {target_version} \
+             (valid: 1..={CURRENT_SCHEMA_VERSION})"
+        );
+    }
+
+    let value = if target_version == 1 {
+        toml::from_str::<toml::Value>(V1_FIXTURE).context("embedded V1 fixture is malformed")?
+    } else {
+        let v1_value: toml::Value =
+            toml::from_str(V1_FIXTURE).context("embedded V1 fixture is malformed")?;
+        run_chain_until(v1_value, 1, target_version)?
+    };
+
+    let mut value = value;
+    if opts.encrypt_secrets {
+        let store_dir = opts.secret_store_dir.context(
+            "--encrypt requires a secret-store directory \
+             (typically the resolved ZEROCLAW_CONFIG_DIR)",
+        )?;
+        let store = crate::secrets::SecretStore::new(store_dir, true);
+        encrypt_secret_strings(&mut value, &store)
+            .context("failed to encrypt secret-bearing fields in generated config")?;
+    }
+
+    toml::to_string_pretty(&value).context("failed to serialize generated config")
+}
+
+/// TOML keys whose string leaves are treated as secrets by
+/// [`encrypt_secret_strings`]. The list is the union of every V1, V2,
+/// and V3 `#[secret]`-annotated field name; matching is exact on the
+/// terminal key (the last path segment) so nested `linkedin.image.*.api_key_env`
+/// references are caught alongside top-level `[model_providers.<X>].api_key`.
+///
+/// Also catches list-of-secret cases (`paired_tokens`) and tuple-style
+/// strings under known secret keys (`private_key`, `webhook_secret`).
+const SECRET_KEY_NAMES: &[&str] = &[
+    "api_key",
+    "api_token",
+    "access_token",
+    "app_password",
+    "app_secret",
+    "app_token",
+    "auth_token",
+    "bearer_token",
+    "bot_token",
+    "channel_access_token",
+    "channel_secret",
+    "client_secret",
+    "encrypt_key",
+    "encoding_aes_key",
+    "nickserv_password",
+    "oauth_token",
+    "password",
+    "paired_tokens",
+    "private_key",
+    "refresh_token",
+    "sasl_password",
+    "secret",
+    "server_password",
+    "shared_secret",
+    "signing_secret",
+    "token",
+    "verification_token",
+    "verify_token",
+    "webhook_secret",
+];
+
+/// Walk a TOML tree and encrypt every string leaf whose terminal key
+/// name appears in [`SECRET_KEY_NAMES`]. Strings already in `enc2:` /
+/// `enc:` form are left alone (idempotent). Arrays of strings under a
+/// matching key (e.g. `paired_tokens`) are encrypted element-wise.
+///
+/// Works at every schema version because it operates on raw TOML
+/// rather than the typed `#[secret]` index, which only exists for V3.
+pub fn encrypt_secret_strings(
+    value: &mut toml::Value,
+    store: &crate::secrets::SecretStore,
+) -> Result<()> {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, child) in table.iter_mut() {
+                if SECRET_KEY_NAMES.contains(&key.as_str()) {
+                    encrypt_in_place(child, store)
+                        .with_context(|| format!("encrypting secret at key `{key}`"))?;
+                } else {
+                    encrypt_secret_strings(child, store)?;
+                }
+            }
+        }
+        toml::Value::Array(items) => {
+            for item in items.iter_mut() {
+                encrypt_secret_strings(item, store)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Encrypt the value at this slot — a string, an array of strings, or
+/// a table containing strings — using the given store. Non-string leaves
+/// (numbers, bools) are left alone; the operator presumably annotated a
+/// non-secret field with a secret-shaped name and we don't second-guess.
+fn encrypt_in_place(value: &mut toml::Value, store: &crate::secrets::SecretStore) -> Result<()> {
+    match value {
+        toml::Value::String(s) => {
+            if !crate::secrets::SecretStore::is_encrypted(s) && !s.is_empty() {
+                let encrypted = store.encrypt(s).context("encrypt string")?;
+                *s = encrypted;
+            }
+        }
+        toml::Value::Array(items) => {
+            for item in items.iter_mut() {
+                encrypt_in_place(item, store)?;
+            }
+        }
+        toml::Value::Table(table) => {
+            for (_, child) in table.iter_mut() {
+                encrypt_secret_strings(child, store)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// High-level: arbitrary versioned TOML → fully validated V3 `Config`.
 /// Runs migration if needed, then deserializes into the current `Config` type.
 pub fn migrate_to_current(input: &str) -> Result<Config> {
@@ -495,29 +659,72 @@ pub(crate) fn fold_string_into_array(
     }
 }
 
-/// Run the typed migration chain from `from` up to `CURRENT_SCHEMA_VERSION`.
-/// `from` must be < `CURRENT_SCHEMA_VERSION` (caller checks).
-fn run_chain(value: toml::Value, from: u32) -> Result<toml::Value> {
-    // Step 1 → 2
-    let after_v1 = if from < 2 {
+/// One typed migration step: `V_n` TOML → `V_{n+1}` TOML.
+type MigrationStep = fn(toml::Value) -> Result<toml::Value>;
+
+/// Migration steps keyed 1-indexed by `from` version: `MIGRATION_STEPS[n]`
+/// is the step from `V_n` to `V_{n+1}`. Slot 0 is a never-invoked
+/// placeholder so callers can write `&MIGRATION_STEPS[from..target]`
+/// directly — both bounds read as schema-version numbers, no offset math.
+///
+/// To add a new schema version `V_n`:
+/// 1. Add `schema/v{n-1}.rs` with a partial typed lens for the prior shape.
+/// 2. Implement `V{n-1}Config::migrate(self) -> Result<toml::Value>`.
+/// 3. Bump [`CURRENT_SCHEMA_VERSION`] to `n`.
+/// 4. Append a new closure here that deserializes `V{n-1}Config` and calls
+///    its `migrate()`. The compile-time assertion below catches drift.
+const MIGRATION_STEPS: &[MigrationStep] = &[
+    // V0 → V1: padding so slot 0 is never indexed. V0 does not exist.
+    |_| unreachable!("MIGRATION_STEPS[0] is a 1-indexing pad and is never invoked"),
+    // V1 → V2
+    |value| {
         let v1: V1Config = value
             .try_into()
             .context("failed to deserialize input as V1 schema")?;
         let v2 = v1.migrate();
-        toml::Value::try_from(v2).context("failed to serialize V2 intermediate")?
-    } else {
-        value
-    };
-
-    // Step 2 → 3
-    if from < 3 {
-        let v2: V2Config = after_v1
+        toml::Value::try_from(v2).context("failed to serialize V2 intermediate")
+    },
+    // V2 → V3
+    |value| {
+        let v2: V2Config = value
             .try_into()
             .context("failed to deserialize as V2 schema")?;
         v2.migrate().context("failed to migrate V2 → V3")
-    } else {
-        Ok(after_v1)
+    },
+];
+
+const _: () = assert!(
+    MIGRATION_STEPS.len() as u32 == CURRENT_SCHEMA_VERSION,
+    "MIGRATION_STEPS must have exactly one entry per schema version \
+     (length = CURRENT_SCHEMA_VERSION, including the slot-0 padding)",
+);
+
+/// Run the typed migration chain from `from` up to `CURRENT_SCHEMA_VERSION`.
+/// `from` must be `< CURRENT_SCHEMA_VERSION` (caller checks).
+fn run_chain(value: toml::Value, from: u32) -> Result<toml::Value> {
+    run_chain_until(value, from, CURRENT_SCHEMA_VERSION)
+}
+
+/// Run the typed migration chain from `from` up to `target` (the shape that
+/// is emitted). `target` must be in `from..=CURRENT_SCHEMA_VERSION`.
+///
+/// Used by `migrate_file` / `migrate_to_current` (target = current) and by
+/// [`generate`] (target = any historical version, for fixture generation).
+fn run_chain_until(value: toml::Value, from: u32, target: u32) -> Result<toml::Value> {
+    if target < from {
+        anyhow::bail!("cannot migrate backwards from V{from} to V{target}");
     }
+    if target > CURRENT_SCHEMA_VERSION {
+        anyhow::bail!(
+            "target V{target} exceeds CURRENT_SCHEMA_VERSION (V{CURRENT_SCHEMA_VERSION})"
+        );
+    }
+
+    let mut cur = value;
+    for step in &MIGRATION_STEPS[from as usize..target as usize] {
+        cur = step(cur)?;
+    }
+    Ok(cur)
 }
 
 /// Reconcile new typed values into an existing `toml_edit::DocumentMut` so

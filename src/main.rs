@@ -1012,6 +1012,22 @@ enum ConfigCommands {
     },
     /// Print the API explorer URL (plus a hint if the daemon isn't running).
     Docs,
+    /// Generate a canonical config at any supported schema version to stdout.
+    ///
+    /// Runs the embedded V1 fixture through the typed migration chain and
+    /// emits the result at the requested version. Useful for repros, doc
+    /// snippets, and seeding test installs. Valid versions are
+    /// `1..=CURRENT_SCHEMA_VERSION` — invalid inputs error out.
+    Generate {
+        /// Target schema version (e.g. 1, 2, 3). Defaults to current.
+        version: Option<u32>,
+        /// Encrypt secret-bearing string values in the output (api_key,
+        /// bot_token, access_token, password, refresh_token, etc.). Works
+        /// at every schema version via a key-name-based walker. Uses the
+        /// resolved config-dir's `.secret_key` (creates one if missing).
+        #[arg(long)]
+        encrypt: bool,
+    },
     /// Print matching property paths for shell completion (hidden)
     #[command(hide = true)]
     Complete {
@@ -2885,6 +2901,20 @@ async fn main() -> Result<()> {
                         println!("{}", entry.name);
                     }
                 }
+                Ok(())
+            }
+            ConfigCommands::Generate { version, encrypt } => {
+                let target = version.unwrap_or(crate::config::migration::CURRENT_SCHEMA_VERSION);
+                let zeroclaw_dir = config
+                    .config_path
+                    .parent()
+                    .map(std::path::Path::to_path_buf);
+                let opts = crate::config::migration::GenerateOptions {
+                    encrypt_secrets: encrypt,
+                    secret_store_dir: zeroclaw_dir.as_deref(),
+                };
+                let toml_out = crate::config::migration::generate(target, &opts)?;
+                print!("{toml_out}");
                 Ok(())
             }
         },
