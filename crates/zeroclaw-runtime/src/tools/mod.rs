@@ -29,6 +29,7 @@ pub mod schedule;
 pub mod security_ops;
 pub mod shell;
 pub mod skill_http;
+pub mod skill_manage;
 pub mod skill_tool;
 pub mod sop_advance;
 pub mod sop_approve;

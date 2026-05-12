@@ -414,6 +414,7 @@ version = "0.1.0"
             SkillImprovementConfig {
                 enabled: true,
                 cooldown_secs: 3600,
+                ..Default::default()
             },
         );
         assert!(improver.should_improve_skill("test-skill"));
@@ -426,6 +427,7 @@ version = "0.1.0"
             SkillImprovementConfig {
                 enabled: true,
                 cooldown_secs: 3600,
+                ..Default::default()
             },
         );
         improver
@@ -441,6 +443,7 @@ version = "0.1.0"
             SkillImprovementConfig {
                 enabled: false,
                 cooldown_secs: 0,
+                ..Default::default()
             },
         );
         assert!(!improver.should_improve_skill("test-skill"));
@@ -470,6 +473,7 @@ tags = ["auto-generated"]
             SkillImprovementConfig {
                 enabled: true,
                 cooldown_secs: 0,
+                ..Default::default()
             },
         );
 
@@ -519,6 +523,7 @@ version = "0.1.0"
             SkillImprovementConfig {
                 enabled: true,
                 cooldown_secs: 0,
+                ..Default::default()
             },
         );
 
@@ -556,6 +561,7 @@ version = "0.1.0"
             SkillImprovementConfig {
                 enabled: true,
                 cooldown_secs: 9999,
+                ..Default::default()
             },
         );
         improver
@@ -752,6 +758,7 @@ improvement_reason = "first pass"
             SkillImprovementConfig {
                 enabled: true,
                 cooldown_secs: 9999,
+                ..Default::default()
             },
         );
         assert!(!improver.should_improve_skill("test-skill"));
@@ -775,6 +782,7 @@ improvement_reason = "first pass"
             SkillImprovementConfig {
                 enabled: true,
                 cooldown_secs: 3600,
+                ..Default::default()
             },
         );
         assert!(improver.should_improve_skill("test-skill"));

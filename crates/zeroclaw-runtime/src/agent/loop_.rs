@@ -2760,6 +2760,37 @@ pub async fn run(
                 }
             }
         }
+
+        // Background skill review fork — spawned post-turn when configured.
+        // Runs a forked agent with restricted toolset (skills_list, skill_view,
+        // skill_manage, memory tools) over a snapshot of the conversation. The
+        // fork decides whether to patch, expand, or archive skills, or do nothing.
+        // See `crate::skills::review::maybe_run_skill_review`.
+        if config.skills.skill_improvement.enabled {
+            let workspace_dir = config.workspace_dir.clone();
+            let review_config = config.skills.skill_improvement.clone();
+            let history_snapshot = history.clone();
+            let failed_slugs: Vec<String> =
+                crate::skills::improver::extract_skill_executions_from_history(&history)
+                    .into_iter()
+                    .filter_map(|(slug, ok)| if ok { None } else { Some(slug) })
+                    .collect();
+            crate::skills::review::maybe_run_skill_review(
+                workspace_dir,
+                review_config,
+                history_snapshot,
+                failed_slugs,
+                provider.as_ref(),
+                &provider_name,
+                &model_name,
+                observer.as_ref(),
+                &config.multimodal,
+                &config.pacing,
+                config.agent.max_tool_result_chars,
+                config.agent.max_context_tokens,
+            )
+            .await;
+        }
         final_output = response.clone();
         println!("{response}");
         observer.record_event(&ObserverEvent::TurnComplete);

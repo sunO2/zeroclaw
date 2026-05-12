@@ -15,6 +15,7 @@ use zip::ZipArchive;
 pub mod audit;
 pub mod creator;
 pub mod improver;
+pub mod review;
 pub mod testing;
 
 const OPEN_SKILLS_REPO_URL: &str = "https://github.com/besoeasy/open-skills";
