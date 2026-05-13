@@ -660,10 +660,17 @@ impl OnboardUi for RatatuiUi {
     }
 
     fn status(&mut self, msg: &str) {
-        self.log.push(LogLine {
-            level: LogLevel::Status,
-            text: msg.to_string(),
-        });
+        if msg.is_empty() {
+            // Empty status = clear sticky status entries. Mirrors
+            // `note("")` for help. Without this path the "Fetching
+            // models…" line lingers after the fetch completes.
+            self.log.retain(|l| !matches!(l.level, LogLevel::Status));
+        } else {
+            self.log.push(LogLine {
+                level: LogLevel::Status,
+                text: msg.to_string(),
+            });
+        }
         // Force a paint so the message is visible before any subsequent
         // blocking work (e.g. a models.dev fetch). Without this, the new
         // log line only surfaces when the next prompt triggers a draw,

@@ -1452,11 +1452,11 @@ async fn main() -> Result<()> {
             (true, true) => bail!("--quick and --cli are mutually exclusive"),
             (true, false) => {
                 let mut ui = QuickUi::new();
-                run_onboard(&mut cfg, &mut ui, target, &flags).await?;
+                Box::pin(run_onboard(&mut cfg, &mut ui, target, &flags)).await?;
             }
             (false, true) => {
                 let mut ui = TermUi;
-                run_onboard(&mut cfg, &mut ui, target, &flags).await?;
+                Box::pin(run_onboard(&mut cfg, &mut ui, target, &flags)).await?;
             }
             (false, false) => {
                 // Default: prefer ratatui TUI. Fall back to TermUi on init
@@ -1468,7 +1468,7 @@ async fn main() -> Result<()> {
                     if std::io::stdout().is_terminal() {
                         match zeroclaw_tui::RatatuiUi::new() {
                             Ok(mut ui) => {
-                                run_onboard(&mut cfg, &mut ui, target, &flags).await?;
+                                Box::pin(run_onboard(&mut cfg, &mut ui, target, &flags)).await?;
                             }
                             Err(e) => {
                                 tracing::debug!("TUI init failed: {e:?}");
@@ -1476,23 +1476,23 @@ async fn main() -> Result<()> {
                                     "TUI init failed ({e}); falling back to terminal prompts."
                                 );
                                 let mut ui = TermUi;
-                                run_onboard(&mut cfg, &mut ui, target, &flags).await?;
+                                Box::pin(run_onboard(&mut cfg, &mut ui, target, &flags)).await?;
                             }
                         }
                     } else {
                         let mut ui = TermUi;
-                        run_onboard(&mut cfg, &mut ui, target, &flags).await?;
+                        Box::pin(run_onboard(&mut cfg, &mut ui, target, &flags)).await?;
                     }
                 }
                 #[cfg(not(feature = "tui-onboarding"))]
                 {
                     let mut ui = TermUi;
-                    run_onboard(&mut cfg, &mut ui, target, &flags).await?;
+                    Box::pin(run_onboard(&mut cfg, &mut ui, target, &flags)).await?;
                 }
             }
         }
 
-        cfg.save().await?;
+        Box::pin(cfg.save_dirty()).await?;
         return Ok(());
     }
 
@@ -2565,7 +2565,7 @@ async fn main() -> Result<()> {
                             "Value required in --no-interactive mode. Usage: zeroclaw config set --no-interactive {path} <value>"
                         )
                     })?;
-                    config.set_prop(&path, &val)?;
+                    config.set_prop_persistent(&path, &val)?;
                 } else if Config::prop_is_secret(&path) {
                     if value.is_some() {
                         eprintln!(
@@ -2579,9 +2579,9 @@ async fn main() -> Result<()> {
                     if secret_value.is_empty() {
                         anyhow::bail!("Value cannot be empty.");
                     }
-                    config.set_prop(&path, &secret_value)?;
+                    config.set_prop_persistent(&path, &secret_value)?;
                 } else if let Some(val) = value {
-                    config.set_prop(&path, &val)?;
+                    config.set_prop_persistent(&path, &val)?;
                 } else {
                     let field_info = config.prop_fields().into_iter().find(|f| f.name == path);
                     let variants = field_info.as_ref().and_then(|info| {
@@ -2599,7 +2599,7 @@ async fn main() -> Result<()> {
                             .items(&variants)
                             .default(current_index)
                             .interact()?;
-                        config.set_prop(&path, &variants[selected])?;
+                        config.set_prop_persistent(&path, &variants[selected])?;
                     } else if field_info
                         .as_ref()
                         .is_some_and(|f| f.kind == crate::config::PropKind::StringArray)
@@ -2635,12 +2635,12 @@ async fn main() -> Result<()> {
                             .filter(|l| !l.is_empty())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        config.set_prop(&path, &val)?;
+                        config.set_prop_persistent(&path, &val)?;
                     } else {
                         anyhow::bail!("Value required. Usage: zeroclaw config set {path} <value>");
                     }
                 }
-                config.save().await?;
+                Box::pin(config.save_dirty()).await?;
                 if let Some(c) = comment.as_ref()
                     && !c.is_empty()
                 {
@@ -2667,7 +2667,10 @@ async fn main() -> Result<()> {
                     .map(str::to_string)
                     .collect();
                 if !initialized.is_empty() {
-                    config.save().await?;
+                    for section in &initialized {
+                        config.mark_dirty(section);
+                    }
+                    Box::pin(config.save_dirty()).await?;
                 }
                 if json {
                     let envelope = serde_json::json!({"initialized": initialized});
@@ -2764,9 +2767,11 @@ async fn main() -> Result<()> {
                                 )
                             })?;
                             let value_str = json_value_to_setprop_string(value, &config, &path)?;
-                            config.set_prop(&path, &value_str).with_context(|| {
-                                format!("op[{idx}] `{op_name}` on `{path}` failed")
-                            })?;
+                            config
+                                .set_prop_persistent(&path, &value_str)
+                                .with_context(|| {
+                                    format!("op[{idx}] `{op_name}` on `{path}` failed")
+                                })?;
                             if is_secret {
                                 serde_json::json!({
                                     "op": op_name,
@@ -2782,7 +2787,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         "remove" => {
-                            config.set_prop(&path, "").with_context(|| {
+                            config.set_prop_persistent(&path, "").with_context(|| {
                                 format!("op[{idx}] `remove` on `{path}` failed")
                             })?;
                             if is_secret {
@@ -2846,7 +2851,7 @@ async fn main() -> Result<()> {
                 config
                     .validate()
                     .context("validation failed after applying patch \u{2014} no changes saved")?;
-                config.save().await?;
+                Box::pin(config.save_dirty()).await?;
 
                 if json {
                     let body = serde_json::json!({"saved": true, "results": results});

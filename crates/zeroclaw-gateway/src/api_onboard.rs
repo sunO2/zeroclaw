@@ -333,6 +333,14 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
         roots.insert(s.as_str().to_string());
     }
 
+    // Drop bare parent-segment entries when a dotted child is present
+    // — `providers` is phantom once `providers.models` etc. are listed.
+    let prefixes_with_children: std::collections::HashSet<String> = roots
+        .iter()
+        .filter_map(|k| k.split_once('.').map(|(parent, _)| parent.to_string()))
+        .collect();
+    roots.retain(|k| k.contains('.') || !prefixes_with_children.contains(k));
+
     // Sort: onboarding-wizard sections first in their canonical order
     // (single source of truth in `zeroclaw_config::onboarding`), then
     // everything else alphabetically. This is what makes /onboard's wizard
@@ -365,6 +373,8 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
                     w,
                     zeroclaw_config::onboarding::Section::Workspace
                         | zeroclaw_config::onboarding::Section::Hardware
+                        | zeroclaw_config::onboarding::Section::Mcp
+                        | zeroclaw_config::onboarding::Section::Skills
                 ),
                 None => map_keyed_roots.contains(key.as_str()),
             };
@@ -399,6 +409,12 @@ const HIDDEN_TOP_LEVEL: &[&str] = &[
 /// Keeps things simple and predictable; specific wording overrides go in
 /// the section-help table or per-section labels if/when we add them.
 fn humanize_section(key: &str) -> String {
+    match key {
+        "providers.models" => return "Model providers".to_string(),
+        "providers.tts" => return "TTS providers".to_string(),
+        "providers.transcription" => return "Transcription providers".to_string(),
+        _ => {}
+    }
     let mut s = key.replace(['_', '-'], " ");
     if let Some(c) = s.get_mut(0..1) {
         c.make_ascii_uppercase();
@@ -415,10 +431,8 @@ fn humanize_section(key: &str) -> String {
 /// `Config.tsx`), not this list.
 fn section_group(key: &str) -> &'static str {
     match key {
-        // The 5 foundation sections (TUI's `Section` enum) — every install
-        // touches these. Named for the role they play, not for the wizard
-        // that happens to walk them on first run.
-        "model_providers" | "channels" | "memory" | "hardware" | "tunnel" | "agents" => {
+        "providers.models" | "channels" | "memory" | "hardware" | "tunnel" | "agents"
+        | "skills" | "skill-bundles" | "risk-profiles" | "runtime-profiles" | "peer-groups" => {
             "Foundation"
         }
         // Agent loop, scheduling, and orchestration.
@@ -432,7 +446,6 @@ fn section_group(key: &str) -> &'static str {
         | "reliability"
         | "runtime"
         | "scheduler"
-        | "skills"
         | "sop"
         | "verifiable_intent" => "Agent",
         // Multi-agent / delegation.
@@ -614,7 +627,9 @@ fn picker_items_for(
         | Section::RuntimeProfiles => {
             PickerDispatch::Items(one_tier_alias_map_picker(cfg, section.as_str()))
         }
-        Section::Workspace | Section::Hardware | Section::Mcp => PickerDispatch::DirectForm,
+        Section::Workspace | Section::Hardware | Section::Mcp | Section::Skills => {
+            PickerDispatch::DirectForm
+        }
     }
 }
 
@@ -962,7 +977,7 @@ pub async fn handle_section_select(
             // Set memory.backend to the picked key. Fields_prefix points at
             // `memory` so the form renders the whole memory section
             // (the active backend's specific fields show up there).
-            if let Err(e) = working.set_prop("memory.backend", &key) {
+            if let Err(e) = working.set_prop_persistent("memory.backend", &key) {
                 return error_response(
                     ConfigApiError::new(
                         ConfigApiCode::ValidationFailed,
@@ -974,7 +989,7 @@ pub async fn handle_section_select(
             ("memory".to_string(), true)
         }
         Section::Tunnel => {
-            if let Err(e) = working.set_prop("tunnel.tunnel_provider", &key) {
+            if let Err(e) = working.set_prop_persistent("tunnel.tunnel_provider", &key) {
                 return error_response(
                     ConfigApiError::new(
                         ConfigApiCode::ValidationFailed,
@@ -992,7 +1007,7 @@ pub async fn handle_section_select(
             };
             (prefix, true)
         }
-        Section::Workspace | Section::Hardware | Section::Mcp => {
+        Section::Workspace | Section::Hardware | Section::Mcp | Section::Skills => {
             return error_response(
                 ConfigApiError::new(
                     ConfigApiCode::PathNotFound,
@@ -1007,7 +1022,11 @@ pub async fn handle_section_select(
         }
     };
 
-    if let Err(e) = working.save().await {
+    if created {
+        working.mark_dirty(&fields_prefix);
+    }
+
+    if let Err(e) = working.save_dirty().await {
         return error_response(ConfigApiError::new(
             ConfigApiCode::ReloadFailed,
             format!("save after select failed: {e}"),
@@ -1053,13 +1072,7 @@ mod tests {
             roots.remove(*hidden);
         }
         // The 5 onboarding sections must still be in the derived set.
-        for required in [
-            "model_providers",
-            "channels",
-            "memory",
-            "hardware",
-            "tunnel",
-        ] {
+        for required in ["providers", "channels", "memory", "hardware", "tunnel"] {
             assert!(
                 roots.contains(required),
                 "derived sections must include onboarding section `{required}`; got {roots:?}",

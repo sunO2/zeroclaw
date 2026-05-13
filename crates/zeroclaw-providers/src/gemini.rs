@@ -325,7 +325,7 @@ const LOAD_CODE_ASSIST_ENDPOINT: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 
 /// Google AI Studio's Gemini endpoint.
-const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+pub(crate) const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TOKEN REFRESH

@@ -280,7 +280,7 @@ fn lookup_prop_field(
 /// readable), keep in-memory state untouched, return `reload_failed`.
 async fn persist_and_swap(
     state: &AppState,
-    new_config: zeroclaw_config::schema::Config,
+    mut new_config: zeroclaw_config::schema::Config,
 ) -> Result<(), ConfigApiError> {
     let config_path = new_config.config_path.clone();
 
@@ -294,11 +294,7 @@ async fn persist_and_swap(
         None
     };
 
-    if let Err(e) = new_config.save().await {
-        // Save failed — try to restore the pre-write snapshot. This isn't
-        // strictly necessary (Config::save uses an atomic-replace via tmp
-        // file) but defends against the rare case where save partially
-        // wrote then errored (e.g. fsync mid-write).
+    if let Err(e) = new_config.save_dirty().await {
         if let Some(prev) = snapshot {
             let _ = tokio::fs::write(&config_path, prev).await;
         } else if config_path.exists() {
@@ -481,7 +477,7 @@ pub async fn handle_prop_put(
         Err(e) => return error_response(e.with_path(&body.path)),
     };
 
-    if let Err(e) = new_config.set_prop(&body.path, &value_str) {
+    if let Err(e) = new_config.set_prop_persistent(&body.path, &value_str) {
         return error_response(map_prop_error(e, &body.path));
     }
 
@@ -546,7 +542,7 @@ pub async fn handle_prop_delete(
         None => return error_response(ConfigApiError::path_not_found(&q.path)),
     };
 
-    if let Err(e) = new_config.set_prop(&q.path, "") {
+    if let Err(e) = new_config.set_prop_persistent(&q.path, "") {
         return error_response(map_prop_error(e, &q.path));
     }
 
@@ -788,8 +784,11 @@ pub async fn handle_delete_map_key(
             );
         }
     };
-    if removed && let Err(e) = persist_and_swap(&state, working).await {
-        return error_response(e);
+    if removed {
+        working.mark_dirty(&format!("{}.{}", q.path, q.key));
+        if let Err(e) = persist_and_swap(&state, working).await {
+            return error_response(e);
+        }
     }
     axum::Json(MapKeyResponse {
         path: q.path,
@@ -831,8 +830,11 @@ pub async fn handle_map_key(
         }
     };
 
-    if created && let Err(e) = persist_and_swap(&state, working).await {
-        return error_response(e);
+    if created {
+        working.mark_dirty(&format!("{path}.{key}"));
+        if let Err(e) = persist_and_swap(&state, working).await {
+            return error_response(e);
+        }
     }
 
     axum::Json(MapKeyResponse { path, key, created }).into_response()
@@ -880,8 +882,12 @@ pub async fn handle_rename_map_key(
         }
     };
 
-    if renamed && let Err(e) = persist_and_swap(&state, working).await {
-        return error_response(e);
+    if renamed {
+        working.mark_dirty(&format!("{}.{}", body.path, body.from));
+        working.mark_dirty(&format!("{}.{}", body.path, body.to));
+        if let Err(e) = persist_and_swap(&state, working).await {
+            return error_response(e);
+        }
     }
 
     axum::Json(RenameMapKeyResponse {
@@ -1035,7 +1041,7 @@ pub async fn handle_patch(
                         return error_response(e.with_path(&path).with_op_index(idx));
                     }
                 };
-                if let Err(e) = working.set_prop(&path, &value_str) {
+                if let Err(e) = working.set_prop_persistent(&path, &value_str) {
                     return error_response(map_prop_error(e, &path).with_op_index(idx));
                 }
                 if is_sensitive {
@@ -1057,7 +1063,7 @@ pub async fn handle_patch(
                 }
             }
             "remove" => {
-                if let Err(e) = working.set_prop(&path, "") {
+                if let Err(e) = working.set_prop_persistent(&path, "") {
                     return error_response(map_prop_error(e, &path).with_op_index(idx));
                 }
                 if is_sensitive {
@@ -1186,6 +1192,10 @@ pub async fn handle_init(
 
     if initialized.is_empty() {
         return axum::Json(InitResponse { initialized }).into_response();
+    }
+
+    for section in &initialized {
+        working.mark_dirty(section);
     }
 
     if let Err(e) = working.validate() {
@@ -1917,7 +1927,7 @@ mod tests {
     fn list_entry_for_secret_omits_value_field() {
         let entry = ListEntry {
             path: "providers.models.ollama.api-key".into(),
-            category: "model_providers".into(),
+            category: "providers.models".into(),
             kind: "string",
             type_hint: "Option<String>",
             value: None,
@@ -1925,7 +1935,7 @@ mod tests {
             is_secret: true,
             is_env_overridden: false,
             enum_variants: vec![],
-            onboard_section: Some("model_providers"),
+            onboard_section: Some("providers.models"),
         };
         let json = serde_json::to_value(&entry).expect("serialize");
         let obj = json.as_object().expect("object");

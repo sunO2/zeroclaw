@@ -576,15 +576,18 @@ pub async fn handle_api_cron_settings_patch(
 
     if let Some(v) = body.get("enabled").and_then(|v| v.as_bool()) {
         config.scheduler.enabled = v;
+        config.mark_dirty("scheduler.enabled");
     }
     if let Some(v) = body.get("catch_up_on_startup").and_then(|v| v.as_bool()) {
         config.scheduler.catch_up_on_startup = v;
+        config.mark_dirty("scheduler.catch-up-on-startup");
     }
     if let Some(v) = body.get("max_run_history").and_then(|v| v.as_u64()) {
         config.scheduler.max_run_history = u32::try_from(v).unwrap_or(u32::MAX);
+        config.mark_dirty("scheduler.max-run-history");
     }
 
-    if let Err(e) = config.save().await {
+    if let Err(e) = config.save_dirty().await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to save config: {e}")})),

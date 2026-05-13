@@ -206,20 +206,21 @@ sections! {
                     The default install dir is fine for most setups.",
         },
         ModelProviders => {
-            key:   "model_providers",
+            key:   "providers.models",
             shape: TypedFamilyMap,
-            help:  "Paste an API key (e.g. `sk-ant-...` for Anthropic, `sk-...` for \
-                    OpenAI) when prompted. For OAuth-based providers run: \
-                    `zeroclaw auth login --model-provider <name>`.",
+            help:  "Pick a model provider to configure (Anthropic, OpenAI, OpenRouter, \
+                    Ollama, custom OpenAI-compatible gateways, etc.). Multiple aliases per \
+                    provider are supported — e.g. anthropic.production and anthropic.dev \
+                    can coexist.",
         },
         TtsProviders => {
-            key:   "tts_providers",
+            key:   "providers.tts",
             shape: TypedFamilyMap,
             help:  "Text-to-speech providers (OpenAI, ElevenLabs, Google, Edge, Piper). \
                     Configure one per voice / language; agents reference them by alias.",
         },
         TranscriptionProviders => {
-            key:   "transcription_providers",
+            key:   "providers.transcription",
             shape: TypedFamilyMap,
             help:  "Speech-to-text providers (OpenAI Whisper, Groq, Deepgram, AssemblyAI, \
                     Google, local Whisper). Configure one per pipeline; agents reference \
@@ -259,6 +260,38 @@ sections! {
                     into one dispatchable unit. Add one per persona; reuse the same \
                     alias across channels to share state.",
         },
+        Skills => {
+            key:   "skills",
+            shape: DirectForm,
+            help:  "Skills tool settings — where skill markdown lives on disk (defaults \
+                    to the data dir), and how the skills loader handles community \
+                    repositories. Add skill BUNDLES under `skill-bundles` below.",
+        },
+        SkillBundles => {
+            key:   "skill-bundles",
+            shape: OneTierAliasMap,
+            help:  "Named bundles of skill files. Agents reference a bundle to load a \
+                    set of capabilities at startup.",
+        },
+        RiskProfiles => {
+            key:   "risk-profiles",
+            shape: OneTierAliasMap,
+            help:  "Named risk profiles binding allowlists, denylists, and approval \
+                    thresholds. Agents reference one via `agents.<alias>.risk_profile`.",
+        },
+        RuntimeProfiles => {
+            key:   "runtime-profiles",
+            shape: OneTierAliasMap,
+            help:  "Named runtime tuning profiles (token limits, retry policy, timeouts). \
+                    Agents reference one via `agents.<alias>.runtime_profile`.",
+        },
+        PeerGroups => {
+            key:   "peer-groups",
+            shape: OneTierAliasMap,
+            help:  "Named groups binding a channel, member agents, and external peers. \
+                    Mutual opt-in: two agents become peers only when both appear in the \
+                    same group's `agents` list.",
+        },
     },
     explorer_only: {
         // Wire keys MUST match the schema's `Config::map_key_sections()`
@@ -270,13 +303,6 @@ sections! {
         // must match the registered form. `from_key` normalizes either
         // form on input so dashboard URLs and CLI invocations work for
         // both spellings.
-        PeerGroups => {
-            key:   "peer-groups",
-            shape: OneTierAliasMap,
-            help:  "Named groups binding a channel, member agents, and external peers. \
-                    Mutual opt-in: two agents become peers only when both appear in the \
-                    same group's `agents` list.",
-        },
         Storage => {
             key:   "storage",
             shape: TypedFamilyMap,
@@ -307,24 +333,6 @@ sections! {
             shape: OneTierAliasMap,
             help:  "Named bundles of knowledge sources (RAG indexes, doc folders). Agents \
                     reference a bundle to surface relevant snippets at inference time.",
-        },
-        SkillBundles => {
-            key:   "skill-bundles",
-            shape: OneTierAliasMap,
-            help:  "Named bundles of skill files. Agents reference a bundle to load a \
-                    set of capabilities at startup.",
-        },
-        RiskProfiles => {
-            key:   "risk-profiles",
-            shape: OneTierAliasMap,
-            help:  "Named risk profiles binding allowlists, denylists, and approval \
-                    thresholds. Agents reference one via `agents.<alias>.risk_profile`.",
-        },
-        RuntimeProfiles => {
-            key:   "runtime-profiles",
-            shape: OneTierAliasMap,
-            help:  "Named runtime tuning profiles (token limits, retry policy, timeouts). \
-                    Agents reference one via `agents.<alias>.runtime_profile`.",
         },
     },
 }

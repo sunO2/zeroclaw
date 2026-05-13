@@ -647,7 +647,7 @@ pub fn model_provider_runtime_options_from_model_provider_entry(
         merge_system_into_user,
         provider_extra: entry.and_then(|e| e.provider_extra.clone()),
         native_tools: entry.and_then(|e| e.native_tools),
-        wire_api: entry.and_then(|e| e.wire_api.clone()),
+        wire_api: entry.and_then(|e| e.wire_api.map(|w| w.as_str().to_string())),
         think: entry.and_then(|e| e.think),
         chat_template_kwargs: entry.and_then(|e| e.chat_template_kwargs.clone()),
     }
@@ -1305,6 +1305,70 @@ pub struct ModelProviderInfo {
     pub display_name: &'static str,
     /// Whether the model model_provider runs locally (no API key required)
     pub local: bool,
+}
+
+/// Canonical base URL for `name`, mirroring what `create_model_provider`
+/// would dial. `None` for families without a fixed default (Azure, custom,
+/// multi-region, CLI shims).
+#[must_use]
+pub fn default_model_provider_url(name: &str) -> Option<&'static str> {
+    use factory::CompatFamilySpec;
+    use zeroclaw_config::schema::{
+        Ai21ModelProviderConfig, AihubmixModelProviderConfig, AnyscaleModelProviderConfig,
+        AstraiModelProviderConfig, BaichuanModelProviderConfig, BasetenModelProviderConfig,
+        CerebrasModelProviderConfig, CloudflareModelProviderConfig, CohereModelProviderConfig,
+        DeepinfraModelProviderConfig, DeepseekModelProviderConfig, DoubaoModelProviderConfig,
+        FireworksModelProviderConfig, FriendliModelProviderConfig, HuggingfaceModelProviderConfig,
+        HyperbolicModelProviderConfig, LeptonModelProviderConfig, LitellmModelProviderConfig,
+        MistralModelProviderConfig, NebiusModelProviderConfig, NovitaModelProviderConfig,
+        NscaleModelProviderConfig, OpencodeModelProviderConfig, PerplexityModelProviderConfig,
+        RekaModelProviderConfig, SambanovaModelProviderConfig, SglangModelProviderConfig,
+        SiliconflowModelProviderConfig, SyntheticModelProviderConfig, TogetherModelProviderConfig,
+        VercelModelProviderConfig, VllmModelProviderConfig, YiModelProviderConfig,
+    };
+
+    match name {
+        "anthropic" => Some(anthropic::BASE_URL),
+        "openai" => Some(openai::BASE_URL),
+        "openrouter" => Some(openrouter::BASE_URL),
+        "ollama" => Some(ollama::BASE_URL),
+        "telnyx" => Some(telnyx::BASE_URL),
+        "gemini" => Some(gemini::BASE_URL),
+        "vercel" => Some(<VercelModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "cloudflare" => Some(<CloudflareModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "synthetic" => Some(<SyntheticModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "opencode" => Some(<OpencodeModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "doubao" => Some(<DoubaoModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "mistral" => Some(<MistralModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "deepseek" => Some(<DeepseekModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "together" => Some(<TogetherModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "fireworks" => Some(<FireworksModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "novita" => Some(<NovitaModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "perplexity" => Some(<PerplexityModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "cohere" => Some(<CohereModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "sglang" => Some(<SglangModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "vllm" => Some(<VllmModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "astrai" => Some(<AstraiModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "siliconflow" => Some(<SiliconflowModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "aihubmix" => Some(<AihubmixModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "litellm" => Some(<LitellmModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "cerebras" => Some(<CerebrasModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "sambanova" => Some(<SambanovaModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "hyperbolic" => Some(<HyperbolicModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "deepinfra" => Some(<DeepinfraModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "huggingface" => Some(<HuggingfaceModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "ai21" => Some(<Ai21ModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "reka" => Some(<RekaModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "baseten" => Some(<BasetenModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "nscale" => Some(<NscaleModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "anyscale" => Some(<AnyscaleModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "nebius" => Some(<NebiusModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "friendli" => Some(<FriendliModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "lepton" => Some(<LeptonModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "baichuan" => Some(<BaichuanModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        "yi" => Some(<YiModelProviderConfig as CompatFamilySpec>::DEFAULT_URL),
+        _ => None,
+    }
 }
 
 /// Return the list of all known model_providers for display in `zeroclaw model_providers list`.

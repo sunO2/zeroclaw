@@ -13,7 +13,7 @@ use zeroclaw_api::tool::ToolSpec;
 /// Anthropic's API documentation lists 1.0 as the default sampling temperature.
 const TEMPERATURE_DEFAULT: f64 = 1.0;
 /// Anthropic's public API endpoint. Overrideable via `model_providers.<name>.base_url`.
-const BASE_URL: &str = "https://api.anthropic.com";
+pub(crate) const BASE_URL: &str = "https://api.anthropic.com";
 
 pub struct AnthropicModelProvider {
     credential: Option<String>,

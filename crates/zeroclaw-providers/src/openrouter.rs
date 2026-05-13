@@ -21,7 +21,7 @@ pub struct OpenRouterModelProvider {
 }
 
 /// OpenRouter's public aggregator endpoint.
-const BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub(crate) const BASE_URL: &str = "https://openrouter.ai/api/v1";
 const OPENROUTER_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Serialize)]

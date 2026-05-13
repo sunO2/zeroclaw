@@ -826,7 +826,7 @@ pub(crate) fn sync_table(doc: &mut toml_edit::Table, new: &toml::Table) {
 /// Convert a `toml::Value` into a `toml_edit::Item` for insertion into
 /// a `DocumentMut`. Tables become inline tables when small, real tables
 /// otherwise — matches `toml_edit`'s default round-trip behavior.
-fn toml_value_to_edit_item(value: &toml::Value) -> toml_edit::Item {
+pub(crate) fn toml_value_to_edit_item(value: &toml::Value) -> toml_edit::Item {
     // Easiest path: serialize to string, parse as toml_edit. Lossy on numeric
     // formatting nuance but correct for migration round-trip where we're
     // emitting freshly-serialized values.

@@ -397,7 +397,7 @@ mod tests {
         let got = route_hashmap_path(
             "providers.models.custom:https://example/v1.api-key",
             "",
-            "model_providers",
+            "providers.models",
             "",
             keys.iter().copied(),
         );

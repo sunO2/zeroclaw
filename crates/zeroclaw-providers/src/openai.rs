@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use zeroclaw_api::tool::ToolSpec;
 
 /// OpenAI's public API endpoint.
-const BASE_URL: &str = "https://api.openai.com/v1";
+pub(crate) const BASE_URL: &str = "https://api.openai.com/v1";
 
 pub struct OpenAiModelProvider {
     base_url: String,

@@ -15,7 +15,7 @@ const TEMPERATURE_DEFAULT: f64 = 0.8;
 const TIMEOUT_SECS_DEFAULT: u64 = 600;
 /// Ollama's standard localhost endpoint. Overrideable via
 /// `model_providers.<name>.base-url` for remote GPU boxes or non-default ports.
-const BASE_URL: &str = "http://localhost:11434";
+pub(crate) const BASE_URL: &str = "http://localhost:11434";
 
 /// Default `num_ctx` (context window, in tokens) sent in every Ollama
 /// `/api/chat` request when no operator override is supplied. Ollama's

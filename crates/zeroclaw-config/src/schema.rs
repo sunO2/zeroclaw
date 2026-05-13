@@ -98,6 +98,10 @@ pub struct Config {
     /// original on-disk credentials survive any save cycle.
     #[serde(skip)]
     pub pre_override_snapshots: std::collections::HashMap<String, String>,
+    /// Dotted prop-paths mutated since the last persist; drives the
+    /// per-path PATCH applied by `save_dirty()`.
+    #[serde(skip)]
+    pub dirty_paths: std::collections::HashSet<String>,
     /// Config file schema version.
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
@@ -579,6 +583,29 @@ pub trait FamilyEndpoint {
     }
 }
 
+/// Wire protocol flavor for the model_provider client. `responses` routes
+/// through OpenAI's Codex/Responses API (`POST /v1/responses`);
+/// `chat_completions` routes through the legacy `/v1/chat/completions` (or
+/// the family's chat-completions-compatible endpoint). Auto-selected per
+/// family when unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum WireApi {
+    Responses,
+    ChatCompletions,
+}
+
+impl WireApi {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Responses => "responses",
+            Self::ChatCompletions => "chat_completions",
+        }
+    }
+}
+
 /// Authentication mode for model model_provider families that support more than one
 /// (e.g. Qwen, Minimax can use API key OR OAuth). Families that only support a
 /// single auth flow simply omit this field from their config struct.
@@ -621,9 +648,9 @@ pub struct ModelProviderConfig {
     /// Extra HTTP headers sent with every request. Niche — used for auth bridges, corporate proxies, or custom gateways that demand a tracing header. Most users never touch this; edit `config.toml` directly if you need it.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub extra_headers: HashMap<String, String>,
-    /// Wire protocol flavor: `"responses"` for OpenAI's Codex/Responses API, `"chat_completions"` for everything else (OpenAI chat, Anthropic, OpenRouter, Groq, local gateways). Auto-selected per model_provider — only override if you're forcing an unusual combination.
+    /// Wire protocol flavor: `responses` for OpenAI's Codex/Responses API, `chat_completions` for everything else (OpenAI chat, Anthropic, OpenRouter, Groq, local gateways). Auto-selected per model_provider — only override if you're forcing an unusual combination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wire_api: Option<String>,
+    pub wire_api: Option<WireApi>,
     /// When true, the client pulls credentials from `OPENAI_API_KEY` or `~/.codex/auth.json` instead of the `api_key` field above. Turn on only for the OpenAI Codex model_provider; leave off for standard API-key model_providers.
     #[serde(default, skip_serializing_if = "is_false")]
     pub requires_openai_auth: bool,
@@ -12284,6 +12311,7 @@ impl Default for Config {
             config_path: zeroclaw_dir.join("config.toml"),
             env_overridden_paths: std::collections::HashSet::new(),
             pre_override_snapshots: std::collections::HashMap::new(),
+            dirty_paths: std::collections::HashSet::new(),
             schema_version: crate::migration::CURRENT_SCHEMA_VERSION,
             providers: crate::providers::Providers::default(),
             model_routes: Vec::new(),
@@ -12678,19 +12706,6 @@ fn has_ollama_cloud_credential(config_api_key: Option<&str>) -> bool {
     config_api_key
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
-}
-
-fn normalize_wire_api(raw: &str) -> Option<&'static str> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "responses" | "openai-responses" | "open-ai-responses" => Some("responses"),
-        "chat_completions"
-        | "chat-completions"
-        | "chat"
-        | "chatcompletions"
-        | "openai-chat-completions"
-        | "open-ai-chat-completions" => Some("chat_completions"),
-        _ => None,
-    }
 }
 
 /// Ensure that essential bootstrap files exist in the workspace directory.
@@ -13388,15 +13403,6 @@ impl Config {
                 }
             }
 
-            if let Some(wire_api) = profile.wire_api.as_deref().map(str::trim)
-                && !wire_api.is_empty()
-                && normalize_wire_api(wire_api).is_none()
-            {
-                anyhow::bail!(
-                    "providers.models.{profile_name}.wire_api must be one of: responses, chat_completions"
-                );
-            }
-
             if let Some(temp) = profile.temperature {
                 validate_temperature(temp).map_err(|e| {
                     anyhow::anyhow!("providers.models.{profile_name}.temperature: {e}")
@@ -13911,9 +13917,9 @@ impl Config {
             // there is no global default-X-provider concept — every consumer
             // either picks a configured alias or opts out entirely.
             let typed_provider_refs: &[(&str, &str, &str)] = &[
-                ("tts_providers", "tts_provider", agent.tts_provider.trim()),
+                ("providers.tts", "tts_provider", agent.tts_provider.trim()),
                 (
-                    "transcription_providers",
+                    "providers.transcription",
                     "transcription_provider",
                     agent.transcription_provider.trim(),
                 ),
@@ -14111,6 +14117,26 @@ impl Config {
         Ok(())
     }
 
+    pub fn mark_dirty(&mut self, path: &str) {
+        self.dirty_paths.insert(path.to_string());
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty_paths.clear();
+    }
+
+    pub fn set_prop_persistent(&mut self, name: &str, value_str: &str) -> Result<()> {
+        self.set_prop(name, value_str)?;
+        self.mark_dirty(name);
+        Ok(())
+    }
+
+    pub fn set_secret_persistent(&mut self, name: &str, value: String) -> Result<()> {
+        self.set_secret(name, value)?;
+        self.mark_dirty(name);
+        Ok(())
+    }
+
     async fn resolve_config_path_for_save(&self) -> Result<PathBuf> {
         if self
             .config_path
@@ -14193,94 +14219,235 @@ impl Config {
                     .parse()
                     .context("Failed to parse existing config for comment preservation")?;
                 crate::migration::sync_table(doc.as_table_mut(), &new_table);
-                doc.to_string()
+                // sync_table preserves existing decor verbatim, so newly
+                // inserted sections lack the blank-line gap before their
+                // header until the post-processor runs.
+                ensure_blank_line_before_sections(&doc.to_string())
             }
         } else {
             new_toml
         };
 
-        let parent_dir = config_path
+        write_config_atomically(&config_path, &toml_str).await
+    }
+
+    /// Incremental save: only the paths in `self.dirty_paths` are written
+    /// against the existing on-disk file. Non-dirty entries (including
+    /// secret ciphertext) are left untouched; dirty paths whose value
+    /// equals the schema default are removed from the doc instead of
+    /// written. Falls back to a full `save()` when the file doesn't
+    /// exist yet. Clears the dirty set on success.
+    pub async fn save_dirty(&mut self) -> Result<()> {
+        if self.dirty_paths.is_empty() {
+            return Ok(());
+        }
+
+        let config_path = self.resolve_config_path_for_save().await?;
+        if !config_path.exists() {
+            let result = self.save().await;
+            if result.is_ok() {
+                self.clear_dirty();
+            }
+            return result;
+        }
+
+        let mut config_to_save = self.clone();
+        let zeroclaw_dir = config_path
             .parent()
             .context("Config path must have a parent directory")?;
+        let store = crate::secrets::SecretStore::new(zeroclaw_dir, self.secrets.encrypt);
 
-        fs::create_dir_all(parent_dir).await.with_context(|| {
+        if !self.pre_override_snapshots.is_empty() {
+            crate::env_overrides::mask_env_overrides_for_save(
+                &mut config_to_save,
+                &self.pre_override_snapshots,
+            )?;
+        }
+        config_to_save.encrypt_secrets(&store)?;
+
+        let full_table: toml::Table = toml::Value::try_from(&config_to_save)
+            .context("Failed to serialize config to TOML value")?
+            .try_into()
+            .context("Serialized config is not a TOML table")?;
+        let default_table: toml::Table = toml::Value::try_from(Config::default())
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or_default();
+
+        let existing = fs::read_to_string(&config_path).await.with_context(|| {
             format!(
-                "Failed to create config directory: {}",
-                parent_dir.display()
+                "Failed to read existing config for incremental save: {}",
+                config_path.display()
             )
         })?;
+        let mut doc: toml_edit::DocumentMut = existing
+            .parse()
+            .context("Failed to parse existing config for incremental save")?;
 
-        let file_name = config_path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or("config.toml");
-        let temp_path = parent_dir.join(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
-        let backup_path = parent_dir.join(format!("{file_name}.bak"));
-
-        let mut temp_file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to create temporary config file: {}",
-                    temp_path.display()
-                )
-            })?;
-        temp_file
-            .write_all(toml_str.as_bytes())
-            .await
-            .context("Failed to write temporary config contents")?;
-        temp_file
-            .sync_all()
-            .await
-            .context("Failed to fsync temporary config file")?;
-        drop(temp_file);
-
-        let had_existing_config = config_path.exists();
-        if had_existing_config {
-            fs::copy(&config_path, &backup_path)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to create config backup before atomic replace: {}",
-                        backup_path.display()
-                    )
-                })?;
+        for path in &self.dirty_paths {
+            apply_dirty_path(doc.as_table_mut(), path, &full_table, &default_table);
         }
 
-        if let Err(e) = fs::rename(&temp_path, &config_path).await {
-            let _ = fs::remove_file(&temp_path).await;
-            if had_existing_config && backup_path.exists() {
-                fs::copy(&backup_path, &config_path)
-                    .await
-                    .context("Failed to restore config backup")?;
-            }
-            anyhow::bail!("Failed to atomically replace config file: {e}");
-        }
+        let toml_str = ensure_blank_line_before_sections(&doc.to_string());
 
-        #[cfg(unix)]
-        {
-            use std::{fs::Permissions, os::unix::fs::PermissionsExt};
-            if let Err(err) = fs::set_permissions(&config_path, Permissions::from_mode(0o600)).await
-            {
-                tracing::warn!(
-                    "Failed to harden config permissions to 0600 at {}: {}",
-                    config_path.display(),
-                    err
-                );
-            }
-        }
-
-        sync_directory(parent_dir).await?;
-
-        if had_existing_config {
-            let _ = fs::remove_file(&backup_path).await;
-        }
-
+        write_config_atomically(&config_path, &toml_str).await?;
+        self.clear_dirty();
         Ok(())
     }
+}
+
+/// Atomic write shared by `save()` and `save_dirty()`.
+async fn write_config_atomically(config_path: &Path, toml_str: &str) -> Result<()> {
+    let parent_dir = config_path
+        .parent()
+        .context("Config path must have a parent directory")?;
+
+    fs::create_dir_all(parent_dir).await.with_context(|| {
+        format!(
+            "Failed to create config directory: {}",
+            parent_dir.display()
+        )
+    })?;
+
+    let file_name = config_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("config.toml");
+    let temp_path = parent_dir.join(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
+    let backup_path = parent_dir.join(format!("{file_name}.bak"));
+
+    let mut temp_file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to create temporary config file: {}",
+                temp_path.display()
+            )
+        })?;
+    temp_file
+        .write_all(toml_str.as_bytes())
+        .await
+        .context("Failed to write temporary config contents")?;
+    temp_file
+        .sync_all()
+        .await
+        .context("Failed to fsync temporary config file")?;
+    drop(temp_file);
+
+    let had_existing_config = config_path.exists();
+    if had_existing_config {
+        fs::copy(config_path, &backup_path).await.with_context(|| {
+            format!(
+                "Failed to create config backup before atomic replace: {}",
+                backup_path.display()
+            )
+        })?;
+    }
+
+    if let Err(e) = fs::rename(&temp_path, config_path).await {
+        let _ = fs::remove_file(&temp_path).await;
+        if had_existing_config && backup_path.exists() {
+            fs::copy(&backup_path, config_path)
+                .await
+                .context("Failed to restore config backup")?;
+        }
+        anyhow::bail!("Failed to atomically replace config file: {e}");
+    }
+
+    #[cfg(unix)]
+    {
+        use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+        if let Err(err) = fs::set_permissions(config_path, Permissions::from_mode(0o600)).await {
+            tracing::warn!(
+                "Failed to harden config permissions to 0600 at {}: {}",
+                config_path.display(),
+                err
+            );
+        }
+    }
+
+    sync_directory(parent_dir).await?;
+
+    if had_existing_config {
+        let _ = fs::remove_file(&backup_path).await;
+    }
+
+    Ok(())
+}
+
+/// Write the in-memory value at `dotted` into the doc, or delete the leaf
+/// when the value is absent or equals the schema default. Segments are
+/// kebab→snake-translated; alias keys never carry hyphens (alias rule).
+fn apply_dirty_path(
+    root: &mut toml_edit::Table,
+    dotted: &str,
+    full_table: &toml::Table,
+    default_table: &toml::Table,
+) {
+    let segments: Vec<String> = dotted.split('.').map(|s| s.replace('-', "_")).collect();
+    if segments.is_empty() {
+        return;
+    }
+    let segs: Vec<&str> = segments.iter().map(String::as_str).collect();
+
+    let mem_val = lookup_path_in_table(full_table, &segs);
+    let default_val = lookup_path_in_table(default_table, &segs);
+
+    let should_delete = match (mem_val, default_val) {
+        (None, _) => true,
+        (Some(m), Some(d)) if m == d => true,
+        _ => false,
+    };
+
+    if should_delete {
+        delete_path_in_doc(root, &segs);
+    } else if let Some(value) = mem_val {
+        set_path_in_doc(root, &segs, value);
+    }
+}
+
+fn lookup_path_in_table<'a>(root: &'a toml::Table, segs: &[&str]) -> Option<&'a toml::Value> {
+    let mut current: Option<&toml::Value> = None;
+    for (i, seg) in segs.iter().enumerate() {
+        let table = if i == 0 { root } else { current?.as_table()? };
+        current = table.get(*seg);
+    }
+    current
+}
+
+fn delete_path_in_doc(root: &mut toml_edit::Table, segs: &[&str]) {
+    let Some((last, parents)) = segs.split_last() else {
+        return;
+    };
+    let mut cursor: &mut toml_edit::Table = root;
+    for seg in parents {
+        cursor = match cursor.get_mut(seg).and_then(|i| i.as_table_mut()) {
+            Some(t) => t,
+            None => return,
+        };
+    }
+    cursor.remove(last);
+}
+
+fn set_path_in_doc(root: &mut toml_edit::Table, segs: &[&str], value: &toml::Value) {
+    let Some((last, parents)) = segs.split_last() else {
+        return;
+    };
+    let mut cursor: &mut toml_edit::Table = root;
+    for seg in parents {
+        if !cursor.contains_key(seg) {
+            cursor.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        cursor = match cursor.get_mut(seg).and_then(|i| i.as_table_mut()) {
+            Some(t) => t,
+            None => return,
+        };
+    }
+    let new_item = crate::migration::toml_value_to_edit_item(value);
+    cursor.insert(last, new_item);
 }
 
 #[allow(clippy::unused_async)] // async needed on unix for tokio File I/O; no-op on other platforms
@@ -14408,6 +14575,7 @@ macro_rules! impl_enum_prop_kind {
     };
 }
 impl_enum_prop_kind!(
+    WireApi,
     HardwareTransport,
     McpTransport,
     ToolFilterGroupMode,
@@ -15190,6 +15358,7 @@ auto_save = true
             escalation: EscalationConfig::default(),
             env_overridden_paths: std::collections::HashSet::new(),
             pre_override_snapshots: std::collections::HashMap::new(),
+            dirty_paths: std::collections::HashSet::new(),
         };
         // ModelProvider fields are now resolved directly — no cache needed.
 
@@ -15778,6 +15947,7 @@ default_temperature = 0.7
             escalation: EscalationConfig::default(),
             env_overridden_paths: std::collections::HashSet::new(),
             pre_override_snapshots: std::collections::HashMap::new(),
+            dirty_paths: std::collections::HashSet::new(),
         };
 
         // ModelProvider fields are now resolved directly — no cache needed.
@@ -17126,7 +17296,7 @@ requires_openai_auth = true
         assert_eq!(profile.api_key.as_deref(), Some("sk-test"));
         assert_eq!(profile.uri.as_deref(), Some("https://api.openai.com/v1"));
         assert_eq!(profile.model.as_deref(), Some("gpt-5.3-codex"));
-        assert_eq!(profile.wire_api.as_deref(), Some("responses"));
+        assert_eq!(profile.wire_api, Some(WireApi::Responses));
         assert!(profile.requires_openai_auth);
     }
 
@@ -17164,7 +17334,7 @@ requires_openai_auth = true
             OpenAIModelProviderConfig {
                 base: ModelProviderConfig {
                     uri: Some("https://api.tonsof.blue".to_string()),
-                    wire_api: Some("responses".to_string()),
+                    wire_api: Some(WireApi::Responses),
                     requires_openai_auth: true,
                     ..Default::default()
                 },
@@ -17177,7 +17347,7 @@ requires_openai_auth = true
             .find("openai", "codex")
             .expect("openai.codex entry");
         assert_eq!(entry.uri.as_deref(), Some("https://api.tonsof.blue"));
-        assert_eq!(entry.wire_api.as_deref(), Some("responses"));
+        assert_eq!(entry.wire_api, Some(WireApi::Responses));
         assert!(entry.requires_openai_auth);
     }
 
@@ -17369,27 +17539,19 @@ model = "primary-model"
     }
 
     #[test]
-    async fn validate_rejects_unknown_model_provider_wire_api() {
-        let _env_guard = env_override_lock().await;
-        let mut config = Config::default();
-        config.providers.models.openrouter.insert(
-            "default".to_string(),
-            OpenRouterModelProviderConfig {
-                base: ModelProviderConfig {
-                    uri: Some("https://api.tonsof.blue/v1".to_string()),
-                    wire_api: Some("ws".to_string()),
-                    requires_openai_auth: false,
-                    max_tokens: None,
-                    ..Default::default()
-                },
-            },
-        );
+    async fn deserialize_rejects_unknown_model_provider_wire_api() {
+        let toml = r#"
+schema_version = 3
 
-        let error = config.validate().expect_err("expected validation failure");
+[providers.models.openrouter.default]
+uri = "https://api.tonsof.blue/v1"
+wire_api = "ws"
+"#;
+        let err = toml::from_str::<Config>(toml).expect_err("expected deserialize failure");
+        let msg = err.to_string();
         assert!(
-            error
-                .to_string()
-                .contains("wire_api must be one of: responses, chat_completions")
+            msg.contains("wire_api") || msg.contains("ws"),
+            "error should reference the invalid wire_api value, got: {msg}"
         );
     }
 

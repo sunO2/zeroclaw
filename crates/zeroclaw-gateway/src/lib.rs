@@ -1638,8 +1638,9 @@ async fn persist_pairing_tokens(config: Arc<RwLock<Config>>, pairing: &PairingGu
     // this should be removed once async mutexes are used everywhere
     let mut updated_cfg = { config.read().clone() };
     updated_cfg.gateway.paired_tokens = paired_tokens;
+    updated_cfg.mark_dirty("gateway.paired-tokens");
     updated_cfg
-        .save()
+        .save_dirty()
         .await
         .context("Failed to persist paired tokens to config.toml")?;
 

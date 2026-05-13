@@ -19,7 +19,7 @@ use reqwest::Client;
 use serde::Deserialize;
 
 /// Telnyx Inference Engine public endpoint.
-const BASE_URL: &str = "https://api.telnyx.com/v2/ai";
+pub(crate) const BASE_URL: &str = "https://api.telnyx.com/v2/ai";
 
 /// Telnyx AI inference model_provider.
 ///

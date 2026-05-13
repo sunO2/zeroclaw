@@ -17,6 +17,19 @@ use zeroclaw_config::traits::{Answer, OnboardUi, PropKind, SelectItem};
 const CUSTOM_OPENAI_COMPAT_LABEL: &str = "Custom OpenAI-compatible endpoint";
 const OPENAI_COMPAT_MODELS_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Sections without a tailored interactive wizard. Single source for
+/// the variant list used by `dispatch_section` and `section_has_signal`.
+/// Macros expand pre-typecheck so each match stays exhaustive.
+macro_rules! acknowledge_only_sections {
+    () => {
+        Section::Storage
+            | Section::Cron
+            | Section::Mcp
+            | Section::McpBundles
+            | Section::KnowledgeBundles
+    };
+}
+
 /// Internal prompt / section navigation signal. `Done` = advance. `Back` =
 /// the user pressed Esc; rewind one step. Helpers propagate it up through
 /// `prompt_field` → `prompt_fields_under` → section fn → `run_all`.
@@ -110,51 +123,80 @@ async fn dispatch_section(
     section: Section,
 ) -> Result<Nav> {
     match section {
-        // The CLI wizard never had a workspace step; `Config::load_or_init`
-        // handles the install-dir bootstrap before onboarding runs.
-        Section::Workspace => Ok(Nav::Done),
+        Section::Workspace => no_wizard_acknowledge(ui, section, "Workspace setup is automatic — the install directory was bootstrapped at first run. Override via the `ZEROCLAW_CONFIG_DIR` / `ZEROCLAW_DATA_DIR` env vars, or by passing `--config <path>` on the CLI.").await,
         Section::ModelProviders => model_providers(cfg, ui, flags).await,
         // TTS and transcription typed-family sections share the same
         // shape as model_providers but don't have an interactive wizard
         // yet — operators configure them via /config or `zeroclaw config
-        // set tts_providers.<type>.<alias>.<field> ...`. Listing them
+        // set providers.tts.<type>.<alias>.<field> ...`. Listing them
         // here keeps the wizard order matching the canonical const.
         Section::TtsProviders | Section::TranscriptionProviders => {
-            ui.note(&format!(
-                "Skipping `{section}` (no interactive wizard yet). \
-                 Configure via the dashboard at /config/{section} or \
-                 `zeroclaw config set {section}.<type>.<alias>.<field> <value>`."
-            ));
-            Ok(Nav::Done)
+            no_wizard_acknowledge(
+                ui,
+                section,
+                &format!(
+                    "No interactive wizard yet. Configure via the dashboard at \
+                     /config/{section} or \
+                     `zeroclaw config set {section}.<type>.<alias>.<field> <value>`."
+                ),
+            )
+            .await
         }
         Section::Channels => channels(cfg, ui, flags).await,
         Section::Memory => memory(cfg, ui, flags).await,
         Section::Hardware => hardware(cfg, ui, flags).await,
         Section::Tunnel => tunnel(cfg, ui, flags).await,
         Section::Agents => agents(cfg, ui, flags).await,
-        // Explorer-only sections — reachable via the dashboard's
-        // `/config/<section>` page or the gateway picker API. No
-        // interactive CLI wizard yet; operators discover them after
-        // the initial setup flow. Listing them here keeps the match
-        // exhaustive so adding a new wizard step is a compile error
-        // until it gets a real arm.
-        Section::PeerGroups
-        | Section::Storage
-        | Section::Cron
-        | Section::Mcp
-        | Section::McpBundles
-        | Section::KnowledgeBundles
-        | Section::SkillBundles
-        | Section::RiskProfiles
-        | Section::RuntimeProfiles => {
-            ui.note(&format!(
-                "`{section}` is configured via the dashboard at /config/{section} \
-                 or `zeroclaw config set {section}.<alias>.<field> <value>` \
-                 (not part of the initial wizard)."
-            ));
-            Ok(Nav::Done)
+        Section::Skills => skills(cfg, ui, flags).await,
+        Section::SkillBundles => {
+            one_tier_alias_section(cfg, ui, section, "skill-bundles", "Skill bundle").await
+        }
+        Section::RiskProfiles => {
+            one_tier_alias_section(cfg, ui, section, "risk-profiles", "Risk profile").await
+        }
+        Section::RuntimeProfiles => {
+            one_tier_alias_section(cfg, ui, section, "runtime-profiles", "Runtime profile").await
+        }
+        Section::PeerGroups => {
+            one_tier_alias_section(cfg, ui, section, "peer-groups", "Peer group").await
+        }
+        acknowledge_only_sections!() => {
+            no_wizard_acknowledge(
+                ui,
+                section,
+                &format!(
+                    "Configured via the dashboard at /config/{section} or \
+                     `zeroclaw config set {section}.<alias>.<field> <value>` \
+                     (not part of the initial wizard)."
+                ),
+            )
+            .await
         }
     }
+}
+
+/// Render heading + help + a confirm prompt for sections without a
+/// tailored wizard. Ratatui's `note()` is a no-op without a subsequent
+/// prompt to anchor it, so the confirm makes the message actually render.
+async fn no_wizard_acknowledge(
+    ui: &mut dyn OnboardUi,
+    section: Section,
+    explanation: &str,
+) -> Result<Nav> {
+    let mut label = section.as_str().replace(['_', '-', '.'], " ");
+    if let Some(c) = label.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    ui.heading(1, &label);
+    let canonical = section.help();
+    let note = if canonical.is_empty() {
+        explanation.to_string()
+    } else {
+        format!("{canonical}\n\n{explanation}")
+    };
+    ui.note(&note);
+    let _ = ui.confirm("Continue", false).await?;
+    Ok(Nav::Done)
 }
 
 /// Walk every section in order with section-level Back. Each section returns
@@ -195,8 +237,8 @@ async fn run_all(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Res
 /// mid-flow find their prior answers already saved on disk — re-running
 /// `zeroclaw onboard` picks up where they left off.
 async fn persist(cfg: &mut Config, path: &str, value: &str) -> Result<()> {
-    cfg.set_prop(path, value)?;
-    cfg.save().await?;
+    cfg.set_prop_persistent(path, value)?;
+    cfg.save_dirty().await?;
     Ok(())
 }
 
@@ -218,9 +260,9 @@ fn emit_section_header(ui: &mut dyn OnboardUi, section: Section, display_label: 
 /// Per-field default override. When a section knows a sensible default
 /// that lives outside the config (e.g. `AnthropicModelProvider::default_temperature()`),
 /// it builds a list of these and passes them to `prompt_fields_under`.
-/// The prompt surfaces the default — shown in the label as
-/// `"timeout-secs (default: 120)"` and prefilled into the input so the
-/// user just hits Enter to accept — only when the field is unset in cfg.
+/// The prompt surfaces the default as ghost-text inside the input box
+/// plus a "Default: X. Press Enter to accept." line in the help blurb,
+/// only when the field is unset in cfg.
 #[derive(Debug, Clone)]
 pub struct FieldDefault {
     pub path: String,
@@ -314,13 +356,7 @@ async fn prompt_field(
     }
     ui.note(&help);
 
-    // Label decorates the short name with the default (when visible) so the
-    // value is anchored to the prompt line itself, not just the help text.
-    let prompt_label = match (is_set, default) {
-        (false, Some(d)) if !d.is_empty() => format!("{short} (default: {d})"),
-        _ => short.to_string(),
-    };
-    let prompt = prompt_label.as_str();
+    let prompt = short;
 
     if field.is_secret {
         match ui.secret(prompt, is_set).await? {
@@ -556,20 +592,13 @@ fn section_has_signal(cfg: &Config, section: Section) -> bool {
         | Section::TranscriptionProviders
         | Section::Memory
         | Section::Tunnel
-        | Section::Agents => false,
-        // Explorer-only sections are never part of the wizard signal
-        // table — they're reached through `/config/<section>` and don't
-        // gate the initial setup flow. Returning false keeps the
-        // section_has_signal contract scoped to wizard variants.
-        Section::PeerGroups
-        | Section::Storage
-        | Section::Cron
-        | Section::Mcp
-        | Section::McpBundles
-        | Section::KnowledgeBundles
+        | Section::Agents
+        | Section::Skills
         | Section::SkillBundles
         | Section::RiskProfiles
-        | Section::RuntimeProfiles => false,
+        | Section::RuntimeProfiles
+        | Section::PeerGroups => false,
+        acknowledge_only_sections!() => false,
     }
 }
 
@@ -739,7 +768,8 @@ async fn mark_completed(cfg: &mut Config, section: Section) -> Result<()> {
         return Ok(());
     }
     cfg.onboard_state.completed_sections.push(key.to_string());
-    cfg.save().await?;
+    cfg.mark_dirty("onboard_state.completed_sections");
+    cfg.save_dirty().await?;
     Ok(())
 }
 
@@ -766,12 +796,13 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     .iter()
                     .map(|p| {
                         let configured = cfg.providers.models.contains_model_provider_type(p.name);
-                        let is_active = p.name == current_type;
-                        let badge = match (is_active, configured) {
-                            (true, _) => Some("[active]".into()),
-                            (_, true) => Some("[configured]".into()),
-                            _ => None,
-                        };
+                        // "configured" describes the actual provider state —
+                        // at least one alias entry exists in
+                        // `[providers.models.<type>]`. The cursor already
+                        // shows which row the operator is hovering, so a
+                        // second "[active]" badge for current selection
+                        // was redundant and misleading.
+                        let badge = configured.then(|| "[configured]".into());
                         SelectItem {
                             label: p.display_name.to_string(),
                             badge,
@@ -804,6 +835,24 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
             }
         };
 
+        // Anchor the breadcrumb to the chosen provider as early as
+        // possible — every prompt that follows (alias, auth, model,
+        // advanced settings) reads against this header. Without the
+        // up-front set, the alias prompt rendered under a generic
+        // "Providers" breadcrumb with no provider-name context.
+        let display_name = entries
+            .iter()
+            .find(|p| p.name == picked)
+            .map(|p| p.display_name)
+            .unwrap_or_else(|| {
+                if picked == "custom" {
+                    CUSTOM_OPENAI_COMPAT_LABEL
+                } else {
+                    picked.as_str()
+                }
+            });
+        ui.heading(2, display_name);
+
         // When --model-provider is forced via CLI flags skip the alias prompt.
         // Otherwise show existing aliases as a selectable list with "+ Add new".
         let alias = if flags.model_provider.is_some() {
@@ -813,6 +862,12 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                 .get_map_keys(&format!("providers.models.{picked}"))
                 .unwrap_or_default();
             if existing_aliases.is_empty() {
+                // Override the API-key help text inherited from the
+                // section intro with alias-specific guidance.
+                ui.note(&format!(
+                    "Short identifier for this {display_name} configuration. \
+                     Letters, digits, underscores. Empty = use the suggested default."
+                ));
                 let Some(a) = prompt_alias_name(ui, "default").await? else {
                     continue;
                 };
@@ -829,6 +884,10 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     Answer::Value(i) => i,
                 };
                 if alias_idx == add_new_idx {
+                    ui.note(&format!(
+                        "Short identifier for this {display_name} configuration. \
+                         Letters, digits, underscores. Empty = use the suggested default."
+                    ));
                     let suggestion = format!("{}-2", existing_aliases[0]);
                     let Some(a) = prompt_alias_name(ui, &suggestion).await? else {
                         continue;
@@ -856,21 +915,11 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
         // family endpoint resolution happens family-side rather than via
         // pre-populated entry fields.
         if let Some(base_url) = selected_base_url.as_deref() {
-            cfg.set_prop(&format!("providers.models.{picked}.{alias}.uri"), base_url)?;
+            cfg.set_prop_persistent(&format!("providers.models.{picked}.{alias}.uri"), base_url)?;
         }
 
-        let display_name = entries
-            .iter()
-            .find(|p| p.name == picked)
-            .map(|p| p.display_name)
-            .unwrap_or_else(|| {
-                if picked == "custom" {
-                    CUSTOM_OPENAI_COMPAT_LABEL
-                } else {
-                    picked.as_str()
-                }
-            });
-        ui.heading(2, display_name);
+        // (display_name + heading set up-front, immediately after the
+        // provider type was picked, so the alias prompt also sees it.)
 
         // Apply CLI-flag overrides up front, then skip those names in the
         // interactive pass so the user isn't re-prompted for what they already
@@ -897,6 +946,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     }
                     if is_new_entry {
                         cfg.providers.models.remove_alias(&picked, &alias);
+                        cfg.mark_dirty(&format!("providers.models.{picked}.{alias}"));
                     }
                     continue;
                 }
@@ -914,6 +964,7 @@ async fn model_providers(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags
                     }
                     if is_new_entry {
                         cfg.providers.models.remove_alias(&picked, &alias);
+                        cfg.mark_dirty(&format!("providers.models.{picked}.{alias}"));
                     }
                     continue;
                 }
@@ -980,12 +1031,21 @@ async fn offer_advanced_settings(
     if let Some((type_k, alias_k)) = prefix
         .strip_prefix("providers.models.")
         .and_then(|rest| rest.split_once('.'))
-        && let Some(uri) = cfg.providers.models.resolved_endpoint_uri(type_k, alias_k)
     {
-        defaults.push(FieldDefault {
-            path: format!("{prefix}.uri"),
-            display: uri.to_string(),
-        });
+        // `resolved_endpoint_uri` only returns Some for multi-region
+        // families; fall back to the family's canonical default.
+        let uri = cfg
+            .providers
+            .models
+            .resolved_endpoint_uri(type_k, alias_k)
+            .map(str::to_string)
+            .or_else(|| zeroclaw_providers::default_model_provider_url(type_k).map(str::to_string));
+        if let Some(uri) = uri {
+            defaults.push(FieldDefault {
+                path: format!("{prefix}.uri"),
+                display: uri,
+            });
+        }
     }
     defaults.push(FieldDefault {
         path: format!("{prefix}.temperature"),
@@ -1070,6 +1130,10 @@ async fn prompt_model(cfg: &mut Config, ui: &mut dyn OnboardUi, prefix: &str) ->
         }
         None => None,
     };
+    // Both fetch paths above are best-effort; clear the "Fetching..."
+    // status so it doesn't linger as a stale banner in the TUI log
+    // pane once the user has moved past the model picker.
+    ui.status("");
 
     let new_value = match live_models {
         Some(models) => {
@@ -1201,7 +1265,8 @@ async fn channels(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> R
         cfg.create_map_key(&format!("channels.{picked}"), &alias)
             .ok();
         let prefix = format!("channels.{picked}.{alias}");
-        cfg.save().await?;
+        cfg.mark_dirty(&prefix);
+        cfg.save_dirty().await?;
         ui.heading(2, picked);
         // Back inside a channel's subfields bounces to the channel list
         // (not to the previous section) — user is still inside Channels.
@@ -1343,7 +1408,8 @@ async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
 
         let prefix = format!("tunnel.{new_model_provider}");
         cfg.init_defaults(Some(&prefix));
-        cfg.save().await?;
+        cfg.mark_dirty(&prefix);
+        cfg.save_dirty().await?;
         ui.heading(2, &new_model_provider);
         match prompt_fields_under(cfg, ui, &prefix, &[], &[]).await? {
             Nav::Back => continue,
@@ -1395,11 +1461,75 @@ async fn agents(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Res
         };
 
         cfg.create_map_key("agents", &alias).ok();
-        cfg.save().await?;
+        cfg.mark_dirty(&format!("agents.{alias}"));
+        cfg.save_dirty().await?;
         ui.heading(2, &alias);
         let _ = prompt_agent_fields(cfg, ui, &alias).await?;
     }
     mark_completed(cfg, Section::Agents).await?;
+    Ok(Nav::Done)
+}
+
+/// Generic OneTierAliasMap section walker — used by skill-bundles,
+/// risk-profiles, runtime-profiles, peer-groups. Lists existing aliases,
+/// lets the operator add a new one, and recurses into the alias's fields
+/// via `prompt_fields_under`.
+async fn one_tier_alias_section(
+    cfg: &mut Config,
+    ui: &mut dyn OnboardUi,
+    section: Section,
+    section_path: &str,
+    select_label: &str,
+) -> Result<Nav> {
+    emit_section_header(ui, section, select_label);
+    loop {
+        let existing: Vec<String> = cfg.get_map_keys(section_path).unwrap_or_default();
+        let mut options: Vec<SelectItem> = existing
+            .iter()
+            .map(|a| SelectItem::new(a.clone()))
+            .collect();
+        let add_new_idx = options.len();
+        options.push(SelectItem::new("+ Add new"));
+        let done_idx = options.len();
+        options.push(SelectItem::new("Done"));
+
+        let idx = match ui.select(select_label, &options, Some(done_idx)).await? {
+            Answer::Back => return Ok(Nav::Back),
+            Answer::Value(i) => i,
+        };
+
+        if idx == done_idx {
+            break;
+        }
+
+        let alias = if idx == add_new_idx {
+            let suggestion = next_agent_alias_suggestion(&existing);
+            let Some(a) = prompt_alias_name(ui, &suggestion).await? else {
+                continue;
+            };
+            a
+        } else {
+            existing[idx].clone()
+        };
+
+        cfg.create_map_key(section_path, &alias).ok();
+        let prefix = format!("{section_path}.{alias}");
+        cfg.mark_dirty(&prefix);
+        cfg.save_dirty().await?;
+        ui.heading(2, &alias);
+        let _ = prompt_fields_under(cfg, ui, &prefix, &[], &[]).await?;
+    }
+    mark_completed(cfg, section).await?;
+    Ok(Nav::Done)
+}
+
+async fn skills(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Result<Nav> {
+    emit_section_header(ui, Section::Skills, "Skills");
+    let nav = prompt_fields_under(cfg, ui, "skills", &[], &[]).await?;
+    if matches!(nav, Nav::Back) {
+        return Ok(Nav::Back);
+    }
+    mark_completed(cfg, Section::Skills).await?;
     Ok(Nav::Done)
 }
 
@@ -2138,8 +2268,8 @@ mod tests {
             cfg.onboard_state
                 .completed_sections
                 .iter()
-                .any(|s| s == "model_providers"),
-            "model_providers section should mark completed"
+                .any(|s| s == "providers.models"),
+            "providers.models section should mark completed"
         );
     }
 
