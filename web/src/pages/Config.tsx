@@ -696,6 +696,28 @@ function SectionOverview({
 }: SectionOverviewProps) {
   const [showPicker, setShowPicker] = useState(false);
 
+  // BackendPicker sections (Memory, Tunnel) pick ONE backend; +Add
+  // and the "configured items" list don't fit single-choice semantics.
+  // Render the picker plus the section's own fields (memory.auto_save,
+  // hygiene, etc.) inline.
+  const isBackendPicker = section.shape === 'backend_picker';
+  if (isBackendPicker) {
+    return (
+      <div className="flex flex-col gap-4">
+        <SectionPicker
+          sectionKey={section.key}
+          help={section.help}
+          onPick={(item) => onPickType(item.key)}
+        />
+        <FieldForm
+          key={`${section.key}-fields`}
+          prefix={section.key}
+          title={`${section.label} settings`}
+        />
+      </div>
+    );
+  }
+
   if (showPicker) {
     return (
       <div className="flex flex-col gap-3">
