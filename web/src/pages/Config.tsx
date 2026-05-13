@@ -26,6 +26,7 @@ import {
   type SectionInfo,
 } from '../lib/api';
 import FieldForm from '../components/onboard/FieldForm';
+import PersonalityEditor from '../components/onboard/PersonalityEditor';
 import ReloadDaemonButton from '../components/onboard/ReloadDaemonButton';
 import SectionPicker from '../components/onboard/SectionPicker';
 
@@ -234,6 +235,7 @@ export default function Config() {
     // (agents). The URL's :type slot carries the alias directly.
     if (typeParam && isOneTierAliasSection) {
       const fieldsPrefix = `${activeSection.key}.${typeParam}`;
+      const isAgent = activeSection.key === 'agents';
       return (
         <div className="flex flex-col gap-3">
           <button
@@ -251,6 +253,12 @@ export default function Config() {
             onSaved={fetchDrift}
             drift={drifted}
           />
+          {isAgent && (
+            <PersonalityEditor
+              key={`${reloadKey}-${typeParam}-personality`}
+              agent={typeParam}
+            />
+          )}
         </div>
       );
     }
@@ -261,6 +269,7 @@ export default function Config() {
         <AliasListView
           sectionKey={activeSection.key}
           typeKey={typeParam}
+          sectionHelp={activeSection.help}
           onSelectAlias={async (alias) => {
             await selectSectionItem(activeSection.key, typeParam, alias);
             navigate(
@@ -303,6 +312,7 @@ export default function Config() {
       return (
         <AliasListView
           sectionKey={activeSection.key}
+          sectionHelp={activeSection.help}
           onSelectAlias={async (alias) => {
             await selectSectionItem(activeSection.key, alias);
             navigate(
@@ -325,10 +335,18 @@ export default function Config() {
             void (async () => {
               try {
                 const resp = await selectSectionItem(activeSection.key, typeKey);
-                navigate(
-                  `/config/${encodeURIComponent(activeSection.key)}/${encodeURIComponent(typeKey)}`,
-                  { state: { fieldsPrefix: resp.fields_prefix } },
-                );
+                // BackendPicker sections (Memory, Tunnel) collapse the
+                // pick into a single field on the section root
+                // (memory.backend, tunnel.tunnel-provider). The form
+                // renders against the section's own prefix, so the URL
+                // is `/config/<section>` with no trailing type segment.
+                // Two-tier paths (providers/channels) still navigate
+                // through the type slot because their alias forms live
+                // under `<section>.<type>.<alias>`.
+                const target = resp.fields_prefix.includes('.')
+                  ? `/config/${resp.fields_prefix.split('.').map(encodeURIComponent).join('/')}`
+                  : `/config/${encodeURIComponent(resp.fields_prefix)}`;
+                navigate(target, { state: { fieldsPrefix: resp.fields_prefix } });
               } catch (e) {
                 setError(e instanceof Error ? e.message : String(e));
               }
@@ -506,6 +524,7 @@ function ConfigAliasHelpBox() {
 function AliasListView({
   sectionKey,
   typeKey,
+  sectionHelp,
   onSelectAlias,
   onBack,
 }: {
@@ -513,6 +532,10 @@ function AliasListView({
   /** Channel/provider type for two-tier sections; omitted for one-tier
    *  alias sections like agents that have no `<type>` segment. */
   typeKey?: string;
+  /** Section's help blurb from the gateway. Renders above the
+   *  generic alias-name help so operators see what the section is
+   *  before being asked to name an entry inside it. */
+  sectionHelp?: string;
   onSelectAlias: (alias: string) => Promise<void>;
   onBack: () => void;
 }) {
@@ -564,6 +587,15 @@ function AliasListView({
         <ArrowLeft className="h-4 w-4" />
         Back
       </button>
+
+      {sectionHelp && (
+        <p
+          className="text-sm leading-relaxed"
+          style={{ color: 'var(--pc-text-secondary)' }}
+        >
+          {sectionHelp}
+        </p>
+      )}
 
       <ConfigAliasHelpBox />
 

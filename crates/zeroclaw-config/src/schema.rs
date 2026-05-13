@@ -14405,7 +14405,43 @@ fn apply_dirty_path(
     if should_delete {
         delete_path_in_doc(root, &segs);
     } else if let Some(value) = mem_val {
-        set_path_in_doc(root, &segs, value);
+        let mut pruned = value.clone();
+        prune_empty_leaves(&mut pruned);
+        set_path_in_doc(root, &segs, &pruned);
+    }
+}
+
+/// Drop empty arrays / tables / strings from a value before writing it
+/// to the doc. HashMap entries serialize every default field (no
+/// `skip_serializing_if` on individual `Vec<String>` fields), so without
+/// this pass an `mcp_bundles.<alias>` write produces `servers = []`,
+/// `exclude = []`, etc. The pruned form round-trips identically because
+/// each dropped field's serde default IS the dropped value.
+fn prune_empty_leaves(value: &mut toml::Value) {
+    match value {
+        toml::Value::Table(t) => {
+            let keys: Vec<String> = t.keys().cloned().collect();
+            for key in keys {
+                if let Some(inner) = t.get_mut(&key) {
+                    prune_empty_leaves(inner);
+                }
+                let drop = match t.get(&key) {
+                    Some(toml::Value::Array(arr)) => arr.is_empty(),
+                    Some(toml::Value::Table(inner)) => inner.is_empty(),
+                    Some(toml::Value::String(s)) => s.is_empty(),
+                    _ => false,
+                };
+                if drop {
+                    t.remove(&key);
+                }
+            }
+        }
+        toml::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                prune_empty_leaves(item);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -360,28 +360,30 @@ pub async fn compute_drift(in_memory: &zeroclaw_config::schema::Config) -> Vec<D
             .collect();
 
     let mut drift: Vec<DriftEntry> = Vec::new();
-    for (name, mem) in &in_memory_props {
-        let disk = match on_disk_props.get(name) {
-            Some(d) => d,
-            None => continue,
-        };
-        if mem.display_value == disk.display_value {
+    let mut all_names: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    all_names.extend(in_memory_props.keys().map(String::as_str));
+    all_names.extend(on_disk_props.keys().map(String::as_str));
+    for name in all_names {
+        let mem = in_memory_props.get(name);
+        let disk = on_disk_props.get(name);
+        let mem_display = mem.map(|p| p.display_value.as_str()).unwrap_or("<unset>");
+        let disk_display = disk.map(|p| p.display_value.as_str()).unwrap_or("<unset>");
+        if mem_display == disk_display {
             continue;
         }
-        let is_sensitive = mem.is_secret || mem.derived_from_secret;
+        let is_sensitive = mem
+            .or(disk)
+            .map(|p| p.is_secret || p.derived_from_secret)
+            .unwrap_or(false);
         if is_sensitive {
-            // Hash-compare server-side so we don't conflate ciphertext-vs-
-            // plaintext display drift with real value drift. If the SHA-256
-            // hashes match, the underlying secret is the same and we hide
-            // the entry.
             use sha2::{Digest, Sha256};
-            let mem_hash = Sha256::digest(mem.display_value.as_bytes());
-            let disk_hash = Sha256::digest(disk.display_value.as_bytes());
+            let mem_hash = Sha256::digest(mem_display.as_bytes());
+            let disk_hash = Sha256::digest(disk_display.as_bytes());
             if mem_hash == disk_hash {
                 continue;
             }
             drift.push(DriftEntry {
-                path: name.clone(),
+                path: name.to_string(),
                 secret: true,
                 drifted: true,
                 in_memory_value: None,
@@ -389,11 +391,11 @@ pub async fn compute_drift(in_memory: &zeroclaw_config::schema::Config) -> Vec<D
             });
         } else {
             drift.push(DriftEntry {
-                path: name.clone(),
+                path: name.to_string(),
                 secret: false,
                 drifted: true,
-                in_memory_value: Some(serde_json::Value::String(mem.display_value.clone())),
-                on_disk_value: Some(serde_json::Value::String(disk.display_value.clone())),
+                in_memory_value: Some(serde_json::Value::String(mem_display.to_string())),
+                on_disk_value: Some(serde_json::Value::String(disk_display.to_string())),
             });
         }
     }

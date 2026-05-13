@@ -155,18 +155,18 @@ pub struct SectionInfo {
     /// attribute that encodes the grouping declaratively.
     pub group: String,
     /// `true` when this section is part of the `/onboard` wizard
-    /// (`zeroclaw_config::onboarding::ONBOARDING_WIZARD`). Frontends
+    /// (`zeroclaw_config::sections::ONBOARDING_WIZARD`). Frontends
     /// filter on this flag so the wizard's section list is server-derived
     /// rather than duplicated on every client.
     pub is_onboarding: bool,
     /// Editor shape (direct form / one-tier alias map / typed-family map /
     /// backend picker). Server-emitted from
-    /// `zeroclaw_config::onboarding::Section::shape()`; both the
+    /// `zeroclaw_config::sections::Section::shape()`; both the
     /// dashboard explorer and the onboard wizard dispatch their renderer
     /// off this flag so identical sections render identically.
     /// `None` for sections that aren't part of the canonical wizard.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub shape: Option<zeroclaw_config::onboarding::SectionShape>,
+    pub shape: Option<zeroclaw_config::sections::SectionShape>,
 }
 
 #[derive(Debug, Serialize)]
@@ -329,7 +329,7 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
     // but are part of the wizard flow (personality lives as markdown
     // files, not TOML). Inject so the canonical-order sort places them
     // correctly and frontends don't need to know which ones to splice.
-    for s in zeroclaw_config::onboarding::ONBOARDING_WIZARD {
+    for s in zeroclaw_config::sections::ONBOARDING_WIZARD {
         roots.insert(s.as_str().to_string());
     }
 
@@ -342,15 +342,15 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
     roots.retain(|k| k.contains('.') || !prefixes_with_children.contains(k));
 
     // Sort: onboarding-wizard sections first in their canonical order
-    // (single source of truth in `zeroclaw_config::onboarding`), then
+    // (single source of truth in `zeroclaw_config::sections`), then
     // everything else alphabetically. This is what makes /onboard's wizard
     // order and /config's foundation grouping derive from one Rust const
     // — frontends consume the response order directly.
     let mut ordered: Vec<String> = roots.into_iter().collect();
     ordered.sort_by(|a, b| {
         match (
-            zeroclaw_config::onboarding::wizard_index_for_key(a),
-            zeroclaw_config::onboarding::wizard_index_for_key(b),
+            zeroclaw_config::sections::wizard_index_for_key(a),
+            zeroclaw_config::sections::wizard_index_for_key(b),
         ) {
             (Some(ai), Some(bi)) => ai.cmp(&bi),
             (Some(_), None) => std::cmp::Ordering::Less,
@@ -367,14 +367,14 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
             // (workspace/hardware/personality) are direct-form. Map-keyed
             // sections outside the wizard (multi-agent peer groups, etc.)
             // get the generic schema-walk picker.
-            let wizard = zeroclaw_config::onboarding::Section::from_key(&key);
+            let wizard = zeroclaw_config::sections::Section::from_key(&key);
             let has_picker = match wizard {
                 Some(w) => !matches!(
                     w,
-                    zeroclaw_config::onboarding::Section::Workspace
-                        | zeroclaw_config::onboarding::Section::Hardware
-                        | zeroclaw_config::onboarding::Section::Mcp
-                        | zeroclaw_config::onboarding::Section::Skills
+                    zeroclaw_config::sections::Section::Workspace
+                        | zeroclaw_config::sections::Section::Hardware
+                        | zeroclaw_config::sections::Section::Mcp
+                        | zeroclaw_config::sections::Section::Skills
                 ),
                 None => map_keyed_roots.contains(key.as_str()),
             };
@@ -385,7 +385,7 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
                 has_picker,
                 group: section_group(&key).to_string(),
                 is_onboarding: wizard.is_some(),
-                shape: wizard.map(zeroclaw_config::onboarding::Section::shape),
+                shape: wizard.map(zeroclaw_config::sections::Section::shape),
                 key,
             }
         })
@@ -469,16 +469,12 @@ fn section_group(key: &str) -> &'static str {
     }
 }
 
-/// Help text for a section. Curated copy for the onboarding sections;
-/// Per-section help text. Single source of truth lives on
-/// [`Section::help`] in `zeroclaw-config` so CLI / TUI / gateway
-/// all render the same copy without parallel hand-curated tables. Non-
-/// wizard sections (gateway, observability, ...) return an empty string;
-/// the form's title is enough there.
+/// Help text for a section. Delegates to `zeroclaw_config::sections::section_help`
+/// so gateway, CLI, and TUI all read from one source — wizard variants
+/// pull from `Section::help`, everything else from the matching
+/// `#[nested]` field's `///` docstring on the `Config` struct.
 fn section_help(key: &str) -> &'static str {
-    zeroclaw_config::onboarding::Section::from_key(key)
-        .map(zeroclaw_config::onboarding::Section::help)
-        .unwrap_or("")
+    zeroclaw_config::sections::section_help(key)
 }
 
 #[derive(Debug, Deserialize)]
@@ -536,7 +532,7 @@ pub async fn handle_section_picker(
     }
     let cfg = state.config.read().clone();
 
-    use zeroclaw_config::onboarding::Section;
+    use zeroclaw_config::sections::Section;
     let Some(section_enum) = Section::from_key(&section) else {
         return error_response(
             ConfigApiError::new(
@@ -591,10 +587,10 @@ enum PickerDispatch {
 /// variant fails to compile until it gets a routing arm. The DRY
 /// version of what the dashboard's per-section view boils down to.
 fn picker_items_for(
-    section: zeroclaw_config::onboarding::Section,
+    section: zeroclaw_config::sections::Section,
     cfg: &zeroclaw_config::schema::Config,
 ) -> PickerDispatch {
-    use zeroclaw_config::onboarding::Section;
+    use zeroclaw_config::sections::Section;
     match section {
         Section::ModelProviders => PickerDispatch::Items(providers_picker(cfg)),
         // TTS / transcription share the typed-family two-tier shape. Each
@@ -609,7 +605,7 @@ fn picker_items_for(
         Section::Tunnel => PickerDispatch::Items(schema_walk_picker_with_none(
             cfg,
             "tunnel",
-            "tunnel.tunnel_provider",
+            "tunnel.tunnel-provider",
         )),
         Section::Agents => PickerDispatch::Items(agents_picker(cfg)),
         // Storage is two-tier (`storage.<kind>.<alias>`) — same shape
@@ -865,7 +861,7 @@ pub async fn handle_section_select(
 
     let mut working = state.config.read().clone();
 
-    use zeroclaw_config::onboarding::Section;
+    use zeroclaw_config::sections::Section;
     let Some(section_enum) = Section::from_key(&section) else {
         return error_response(
             ConfigApiError::new(
@@ -948,6 +944,33 @@ pub async fn handle_section_select(
                 Ok(c) => c,
                 Err(resp) => return resp,
             };
+            // Agents need a per-alias workspace dir on disk so the
+            // PersonalityEditor and the runtime have somewhere to read
+            // and write IDENTITY.md / SOUL.md / USER.md / etc.
+            if created && matches!(section_enum, Section::Agents) {
+                let workspace_dir = working.agent_workspace_dir(&key);
+                if let Err(err) = tokio::fs::create_dir_all(&workspace_dir).await {
+                    return error_response(
+                        ConfigApiError::new(
+                            ConfigApiCode::ValidationFailed,
+                            format!(
+                                "created agent `{key}` but failed to scaffold workspace at {}: {err}",
+                                workspace_dir.display()
+                            ),
+                        )
+                        .with_path(section_key),
+                    );
+                }
+                if let Err(err) =
+                    zeroclaw_config::schema::ensure_bootstrap_files(&workspace_dir).await
+                {
+                    tracing::warn!(
+                        agent = %key,
+                        workspace = %workspace_dir.display(),
+                        "agent workspace scaffolded but bootstrap files seed failed (continuing): {err}",
+                    );
+                }
+            }
             (format!("{section_key}.{key}"), created)
         }
         Section::Storage => {
@@ -989,13 +1012,13 @@ pub async fn handle_section_select(
             ("memory".to_string(), true)
         }
         Section::Tunnel => {
-            if let Err(e) = working.set_prop_persistent("tunnel.tunnel_provider", &key) {
+            if let Err(e) = working.set_prop_persistent("tunnel.tunnel-provider", &key) {
                 return error_response(
                     ConfigApiError::new(
                         ConfigApiCode::ValidationFailed,
-                        format!("could not set tunnel.tunnel_provider = `{key}`: {e}"),
+                        format!("could not set tunnel.tunnel-provider = `{key}`: {e}"),
                     )
-                    .with_path("tunnel.tunnel_provider"),
+                    .with_path("tunnel.tunnel-provider"),
                 );
             }
             let prefix = if key == "none" {
@@ -1239,7 +1262,7 @@ mod tests {
     #[test]
     fn tunnel_picker_includes_synthetic_none() {
         let cfg = empty_cfg();
-        let items = schema_walk_picker_with_none(&cfg, "tunnel", "tunnel.tunnel_provider");
+        let items = schema_walk_picker_with_none(&cfg, "tunnel", "tunnel.tunnel-provider");
         assert_eq!(
             items[0].key, "none",
             "`none` must be the first entry in the tunnel picker"
@@ -1318,7 +1341,7 @@ mod tests {
     /// `picker_items_for`.
     #[test]
     fn picker_dispatch_covers_every_section_variant() {
-        use zeroclaw_config::onboarding::Section;
+        use zeroclaw_config::sections::Section;
         let cfg = empty_cfg();
         // The full Section surface = wizard steps + explorer-only.
         // Spelling them out here pins both groups, so adding a row to

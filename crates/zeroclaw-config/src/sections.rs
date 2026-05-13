@@ -369,6 +369,32 @@ pub fn is_wizard_section(key: &str) -> bool {
     Section::from_key(key).is_some()
 }
 
+/// Help blurb for a section key, covering both `Section` variants and
+/// the long tail of top-level `Config` fields the dashboard / TUI config
+/// editor surface (gateway, scheduler, observability, …). Single source
+/// of truth shared by every surface — the gateway sidebar, the CLI
+/// wizard, and the future TUI config editor all call this rather than
+/// maintaining parallel tables.
+///
+/// Resolution order:
+/// 1. Wizard / explorer-only `Section` variants (curated `help` text
+///    next to the variant declaration in the `sections!` macro).
+/// 2. The `Config` struct's `#[nested]` field-level `///` docstring,
+///    harvested by the `Configurable` derive into
+///    `Config::nested_section_help`. This is what makes adding a new
+///    top-level section a one-line schema change with no parallel
+///    help table to update.
+///
+/// Returns `""` for keys without a docstring so callers can decide
+/// whether to omit the help row or show a fallback.
+#[must_use]
+pub fn section_help(key: &str) -> &'static str {
+    if let Some(s) = Section::from_key(key) {
+        return s.help();
+    }
+    crate::schema::Config::nested_section_help(key).unwrap_or("")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

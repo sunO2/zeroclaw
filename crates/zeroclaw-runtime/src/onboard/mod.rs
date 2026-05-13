@@ -62,7 +62,7 @@ struct OpenAiModel {
     id: String,
 }
 
-pub use zeroclaw_config::onboarding::Section;
+pub use zeroclaw_config::sections::Section;
 
 /// What slice of onboarding the orchestrator should run. `None` walks
 /// the full wizard (every [`Section`] in canonical order); `Some(s)`
@@ -205,12 +205,12 @@ async fn no_wizard_acknowledge(
 /// onboarding cleanly (user bails out).
 async fn run_all(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Result<()> {
     // Walk the canonical wizard order from
-    // `zeroclaw_config::onboarding::ONBOARDING_WIZARD` — the
+    // `zeroclaw_config::sections::ONBOARDING_WIZARD` — the
     // single source of truth shared with the gateway and the dashboard.
     // Skipping `workspace` here matches the previous behavior (the CLI
     // wizard never had a workspace step; Config::load_or_init handles
     // the install-dir bootstrap before onboarding runs).
-    let order: Vec<Section> = zeroclaw_config::onboarding::ONBOARDING_WIZARD
+    let order: Vec<Section> = zeroclaw_config::sections::ONBOARDING_WIZARD
         .iter()
         .copied()
         .filter(|w| *w != Section::Workspace)
@@ -768,7 +768,7 @@ async fn mark_completed(cfg: &mut Config, section: Section) -> Result<()> {
         return Ok(());
     }
     cfg.onboard_state.completed_sections.push(key.to_string());
-    cfg.mark_dirty("onboard_state.completed_sections");
+    cfg.mark_dirty("onboard-state.completed-sections");
     cfg.save_dirty().await?;
     Ok(())
 }
@@ -1399,7 +1399,7 @@ async fn tunnel(cfg: &mut Config, ui: &mut dyn OnboardUi, flags: &Flags) -> Resu
         let new_model_provider = provider_names[idx].clone();
 
         if new_model_provider != current_model_provider {
-            persist(cfg, "tunnel.tunnel_provider", &new_model_provider).await?;
+            persist(cfg, "tunnel.tunnel-provider", &new_model_provider).await?;
         }
 
         if new_model_provider == "none" {
@@ -1463,6 +1463,21 @@ async fn agents(cfg: &mut Config, ui: &mut dyn OnboardUi, _flags: &Flags) -> Res
         cfg.create_map_key("agents", &alias).ok();
         cfg.mark_dirty(&format!("agents.{alias}"));
         cfg.save_dirty().await?;
+        let workspace_dir = cfg.agent_workspace_dir(&alias);
+        if let Err(err) = tokio::fs::create_dir_all(&workspace_dir).await {
+            ui.warn(&format!(
+                "Could not create agent workspace at {}: {err}",
+                workspace_dir.display()
+            ));
+        } else if let Err(err) =
+            zeroclaw_config::schema::ensure_bootstrap_files(&workspace_dir).await
+        {
+            tracing::warn!(
+                agent = %alias,
+                workspace = %workspace_dir.display(),
+                "bootstrap file seed failed (continuing): {err}",
+            );
+        }
         ui.heading(2, &alias);
         let _ = prompt_agent_fields(cfg, ui, &alias).await?;
     }

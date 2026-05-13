@@ -206,6 +206,14 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
     // automatically — no hand-maintained mirror list anywhere.
     let mut nested_option_entry_pushes: Vec<proc_macro2::TokenStream> = Vec::new();
 
+    // Per `#[nested]` field, a `<kebab-name> => <field-level-doc>` arm so
+    // `nested_section_help` can answer the dashboard sidebar's
+    // "what is this section?" lookup without any hand-curated parallel
+    // table. Field-level doc beats struct-level doc here because the
+    // schema's `///` on `pub gateway: GatewayConfig` describes the
+    // section's role in this Config, which is what the operator needs.
+    let mut nested_section_help_arms: Vec<proc_macro2::TokenStream> = Vec::new();
+
     for field in fields {
         let field_ident = field.ident.as_ref().expect("Named field must have ident");
         let is_secret = has_attr(field, "secret");
@@ -358,6 +366,12 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                 let field_name_lit = snake_to_kebab(&field_ident.to_string());
                 let field_doc = extract_doc(&field.attrs);
                 let value_ty_name = value_ty.to_token_stream().to_string();
+
+                if !field_doc.is_empty() {
+                    nested_section_help_arms.push(quote! {
+                        #field_name_lit => Some(#field_doc),
+                    });
+                }
 
                 if double_value_ty.is_none() {
                     // Single-level `HashMap<String, T: Configurable>` only.
@@ -1047,6 +1061,13 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                 });
 
                 let field_name_str = field_ident.to_string();
+                let opt_field_name_lit = snake_to_kebab(&field_name_str);
+                let opt_field_doc = extract_doc(&field.attrs);
+                if !opt_field_doc.is_empty() {
+                    nested_section_help_arms.push(quote! {
+                        #opt_field_name_lit => Some(#opt_field_doc),
+                    });
+                }
                 let display_name_lit = extract_string_attr(&field.attrs, "display_name")
                     .unwrap_or_else(|| snake_to_title(&field_name_str));
                 let description_lit =
@@ -1168,6 +1189,11 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                 let vec_inner_name = vec_inner_ty.to_token_stream().to_string();
                 let field_doc = extract_doc(&field.attrs);
                 let vec_field_name_lit = snake_to_kebab(&field_ident.to_string());
+                if !field_doc.is_empty() {
+                    nested_section_help_arms.push(quote! {
+                        #vec_field_name_lit => Some(#field_doc),
+                    });
+                }
                 map_key_section_entries.push(quote! {
                     out.push(crate::config::MapKeySection {
                         path: {
@@ -1213,6 +1239,13 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                     }
                 });
             } else {
+                let plain_field_name_lit = snake_to_kebab(&field_ident.to_string());
+                let plain_field_doc = extract_doc(&field.attrs);
+                if !plain_field_doc.is_empty() {
+                    nested_section_help_arms.push(quote! {
+                        #plain_field_name_lit => Some(#plain_field_doc),
+                    });
+                }
                 nested_collect.push(quote! {
                     fields.extend(self.#field_ident.secret_fields());
                 });
@@ -1669,6 +1702,17 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                 #(#map_key_section_entries)*
                 #(#map_key_recurse)*
                 out
+            }
+
+            /// Help blurb for a `#[nested]` field on this struct, sourced from
+            /// the field-level `///` docstring. Returns `None` for unknown
+            /// names so callers can fall through to a different lookup.
+            #[must_use]
+            pub fn nested_section_help(name: &str) -> Option<&'static str> {
+                match name {
+                    #(#nested_section_help_arms)*
+                    _ => None,
+                }
             }
 
             /// Return the current alias keys at `section_path`, or `None` if

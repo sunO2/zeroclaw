@@ -364,7 +364,7 @@ enum Commands {
     Onboard {
         /// Configure a specific section only. Omit to run the full flow.
         #[command(subcommand)]
-        section: Option<zeroclaw_config::onboarding::Section>,
+        section: Option<zeroclaw_config::sections::Section>,
 
         /// Skip interactive prompts; read from --api-key/--model-provider/--model/--memory.
         #[arg(long)]
@@ -854,7 +854,7 @@ Examples:
 }
 
 // `zeroclaw onboard <section>` parses its positional subcommand into
-// `zeroclaw_config::onboarding::Section` directly via clap's
+// `zeroclaw_config::sections::Section` directly via clap's
 // `Subcommand` derive (gated on the `clap` feature there). No mirror
 // enum, no parallel variant list — the canonical `Section` enum IS
 // the clap surface.
@@ -873,8 +873,8 @@ enum DeprecatedPropsCommands {
 /// below and its tests both walk this table — no magic positional
 /// bools, no parallel mapping.
 #[cfg(feature = "agent-runtime")]
-const LEGACY_ONBOARD_FLAGS: &[(zeroclaw_config::onboarding::Section, &str, &str)] = {
-    use zeroclaw_config::onboarding::Section;
+const LEGACY_ONBOARD_FLAGS: &[(zeroclaw_config::sections::Section, &str, &str)] = {
+    use zeroclaw_config::sections::Section;
     &[
         (Section::Channels, "--channels-only", "channels"),
         (Section::ModelProviders, "--providers-only", "providers"),
@@ -898,7 +898,7 @@ const LEGACY_ONBOARD_FLAGS: &[(zeroclaw_config::onboarding::Section, &str, &str)
 /// CLI bools so the position-encoded mapping is no longer scattered.
 #[cfg(feature = "agent-runtime")]
 fn resolve_onboard_target(
-    explicit: Option<zeroclaw_config::onboarding::Section>,
+    explicit: Option<zeroclaw_config::sections::Section>,
     legacy_flags: &[bool],
 ) -> (
     zeroclaw_runtime::onboard::Target,
@@ -3775,7 +3775,7 @@ mod tests {
         // wizard's `as_str()` keys (snake_case) verbatim, set via
         // `#[command(name = $key)]` inside the `sections!` macro that
         // also defines the enum.
-        for w in zeroclaw_config::onboarding::ONBOARDING_WIZARD {
+        for w in zeroclaw_config::sections::ONBOARDING_WIZARD {
             let cli = Cli::try_parse_from(["zeroclaw", "onboard", w.as_str()])
                 .unwrap_or_else(|_| panic!("onboard {} should parse", w.as_str()));
             match cli.command {
