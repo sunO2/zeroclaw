@@ -24,6 +24,31 @@ pub struct SessionMetadata {
     /// `config.agents`). `None` for sessions persisted before per-agent
     /// attribution landed, or for backends that don't track it.
     pub agent_alias: Option<String>,
+    /// Dotted ChannelRef the session belongs to (`<type>.<alias>`,
+    /// e.g. `discord.clamps`). `None` for non-channel sessions (CLI,
+    /// internal cron runs) or backends without routing columns.
+    pub channel_id: Option<String>,
+    /// Platform-side room / thread identifier (Discord channel id,
+    /// Matrix room id, Slack thread ts, ...). `None` for direct messages
+    /// or backends that don't track it.
+    pub room_id: Option<String>,
+    /// Inbound sender id verbatim (Discord username, phone number, ...).
+    /// Not an FK — sessions can survive deletion of the upstream user.
+    pub sender_id: Option<String>,
+}
+
+/// Structured routing context recorded alongside a session. Mirrors the
+/// `ChannelMessage` fields the orchestrator uses to compose
+/// `conversation_history_key` so the session row can be queried by
+/// channel / room / sender without re-parsing the synthetic key.
+#[derive(Debug, Clone, Default)]
+pub struct SessionContext<'a> {
+    /// `<type>.<alias>` ChannelRef (`discord.clamps`).
+    pub channel_id: Option<&'a str>,
+    /// Platform-side room / thread id.
+    pub room_id: Option<&'a str>,
+    /// Inbound sender id (channel-native username, phone, ...).
+    pub sender_id: Option<&'a str>,
 }
 
 /// Query parameters for listing sessions.
@@ -79,6 +104,9 @@ pub trait SessionBackend: Send + Sync {
                     last_activity: Utc::now(),
                     message_count: messages.len(),
                     agent_alias: None,
+                    channel_id: None,
+                    room_id: None,
+                    sender_id: None,
                 }
             })
             .collect()
@@ -144,6 +172,19 @@ pub trait SessionBackend: Send + Sync {
         Ok(None)
     }
 
+    /// Record the channel / room / sender routing context for a session.
+    /// Called by channel orchestrators right before the LLM dispatch so
+    /// the session row can be filtered by platform attribute in the
+    /// dashboard. No-op default; SQLite override fills the columns added
+    /// in the structured-routing migration.
+    fn set_session_context(
+        &self,
+        _session_key: &str,
+        _context: SessionContext<'_>,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+
     /// Look up metadata for a single session by key.
     ///
     /// The default impl loads all messages to derive the count and calls
@@ -162,6 +203,9 @@ pub trait SessionBackend: Send + Sync {
             last_activity: Utc::now(),
             message_count: messages.len(),
             agent_alias: None,
+            channel_id: None,
+            room_id: None,
+            sender_id: None,
         })
     }
 
@@ -216,6 +260,9 @@ mod tests {
             last_activity: Utc::now(),
             message_count: 5,
             agent_alias: None,
+            channel_id: None,
+            room_id: None,
+            sender_id: None,
         };
         assert_eq!(meta.key, "test");
         assert_eq!(meta.message_count, 5);

@@ -192,6 +192,9 @@ impl SessionBackend for SessionStore {
                     message_count: 0,
                     key,
                     agent_alias: None,
+                    channel_id: None,
+                    room_id: None,
+                    sender_id: None,
                 }
             })
             .collect()

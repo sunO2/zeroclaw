@@ -2827,6 +2827,36 @@ async fn process_channel_message(
     }
 
     let history_key = conversation_history_key(&msg);
+    if let Some(ref store) = ctx.session_store {
+        let channel_id = msg
+            .channel_alias
+            .as_deref()
+            .map(|alias| format!("{}.{alias}", msg.channel));
+        let room_id = msg
+            .thread_ts
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let target = msg.reply_target.trim();
+                if target.is_empty() {
+                    None
+                } else {
+                    Some(target)
+                }
+            });
+        let context = zeroclaw_infra::session_backend::SessionContext {
+            channel_id: channel_id.as_deref(),
+            room_id,
+            sender_id: Some(msg.sender.as_str()).filter(|s| !s.is_empty()),
+        };
+        if let Err(e) = store.set_session_context(&history_key, context) {
+            tracing::warn!(
+                channel = %msg.channel,
+                history_key = %history_key,
+                "Failed to stamp session routing context: {e}"
+            );
+        }
+    }
     let mut route = get_route_selection(ctx.as_ref(), &history_key);
 
     // ── Query classification: override route when a rule matches ──
