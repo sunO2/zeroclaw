@@ -2134,6 +2134,17 @@ impl SecurityPolicy {
         let agent_workspace = config.agent_workspace_dir(agent_alias);
         let mut policy = Self::from_risk_profile(risk_profile, &agent_workspace);
 
+        // Shared skills directory: every agent reads from
+        // `<install>/shared/skills/` so the `read_skills` tool resolves
+        // bundle directories no matter which bundle the agent is
+        // assigned. Read-only — bundle writes go through the SkillsService
+        // (gateway/CLI/TUI), not through the agent's filesystem tools.
+        // Archive root (`shared/skills/_deleted/`) is excluded to keep it
+        // out of agent context.
+        policy
+            .allowed_roots_read_only
+            .push(config.shared_workspace_dir().join("skills"));
+
         // Cross-agent filesystem access: the agent's
         // [agents.<alias>.workspace.access] map declares which sibling
         // workspaces this agent may read or write. Resolve each

@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
+use super::constants::{SKILL_DEPRECATED_MANIFESTS, SKILL_MANIFEST_FILENAME};
+
 const MAX_TEXT_FILE_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -47,14 +49,14 @@ pub fn audit_skill_directory_with_options(
         .with_context(|| format!("failed to canonicalize {}", skill_dir.display()))?;
     let mut report = SkillAuditReport::default();
 
-    let has_manifest = canonical_root.join("SKILL.md").is_file()
-        || canonical_root.join("SKILL.toml").is_file()
-        || canonical_root.join("manifest.toml").is_file();
-    if !has_manifest {
-        report.findings.push(
-            "Skill root must include SKILL.md, SKILL.toml, or manifest.toml for deterministic auditing."
-                .to_string(),
-        );
+    let has_canonical = canonical_root.join(SKILL_MANIFEST_FILENAME).is_file();
+    let has_deprecated = SKILL_DEPRECATED_MANIFESTS
+        .iter()
+        .any(|name| canonical_root.join(name).is_file());
+    if !has_canonical && !has_deprecated {
+        report.findings.push(format!(
+            "Skill root must include {SKILL_MANIFEST_FILENAME} (canonical) or one of {SKILL_DEPRECATED_MANIFESTS:?} (deprecated) for deterministic auditing.",
+        ));
     }
 
     for path in collect_paths_depth_first(&canonical_root)? {
