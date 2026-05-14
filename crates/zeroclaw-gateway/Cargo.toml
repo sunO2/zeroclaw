@@ -33,6 +33,9 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["logg
 
 # Frontend asset MIME type detection (dashboard served from filesystem)
 mime_guess = "2"
+
+# Base64 encoding for binary file content in agent workspace `read` responses.
+base64 = "0.22"
 include_dir = { version = "0.7", optional = true }
 
 # Schemars JSON Schema generation for OPTIONS responses; matches the version

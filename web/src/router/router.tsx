@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import Layout from '../components/layout/Layout';
 import {
   AgentChat,
+  AgentWorkspaceExplorer,
   AgentsList,
   Canvas,
   Config, Cost,
@@ -35,6 +36,7 @@ export const Router = () => (
         <Route path="/agent" element={<Navigate to="/agents" replace />} />
         <Route path="/agents" element={<AgentsList />} />
         <Route path="/agent/:alias" element={<AgentChat />} />
+        <Route path="/agent/:alias/workspace" element={<AgentWorkspaceExplorer />} />
         <Route path="/tools" element={<Tools />} />
         <Route path="/cron" element={<Cron />} />
         <Route path="/integrations" element={<Integrations />} />

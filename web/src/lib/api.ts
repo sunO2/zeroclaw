@@ -789,6 +789,58 @@ export function rmdirShared(path: string): Promise<{ removed: string }> {
   });
 }
 
+// ── Agent workspace explorer ────────────────────────────────────────────
+//
+// All four endpoints scope to `<install>/agents/{alias}/workspace/`. The
+// runtime enforces containment + protected-file refusal; the dashboard is
+// a viewer/editor on top.
+
+export interface AgentWorkspaceFileRead {
+  path: string;
+  size: number;
+  is_text: boolean;
+  /** UTF-8 text when `is_text` is true, base64 otherwise. */
+  content: string;
+  encoding: 'utf8' | 'base64';
+}
+
+export function listAgentWorkspace(alias: string, path = ''): Promise<BrowseResponse> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : '';
+  return apiFetch<BrowseResponse>(
+    `/api/agents/${encodeURIComponent(alias)}/workspace/list${q}`,
+  );
+}
+
+export function readAgentWorkspaceFile(
+  alias: string,
+  path: string,
+): Promise<AgentWorkspaceFileRead> {
+  return apiFetch<AgentWorkspaceFileRead>(
+    `/api/agents/${encodeURIComponent(alias)}/workspace/read?path=${encodeURIComponent(path)}`,
+  );
+}
+
+export function deleteAgentWorkspacePath(
+  alias: string,
+  path: string,
+): Promise<{ removed: string }> {
+  return apiFetch<{ removed: string }>(
+    `/api/agents/${encodeURIComponent(alias)}/workspace/path`,
+    { method: 'DELETE', body: JSON.stringify({ path }) },
+  );
+}
+
+export function moveAgentWorkspacePath(
+  alias: string,
+  from: string,
+  to: string,
+): Promise<{ from: string; to: string }> {
+  return apiFetch<{ from: string; to: string }>(
+    `/api/agents/${encodeURIComponent(alias)}/workspace/move`,
+    { method: 'POST', body: JSON.stringify({ from, to }) },
+  );
+}
+
 /**
  * Create a new entry under a map-keyed or list-shaped section. For Map
  * kinds the `key` is the new HashMap key; for List kinds it's the new

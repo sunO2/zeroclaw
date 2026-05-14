@@ -1274,6 +1274,22 @@ pub async fn run_gateway(
         .route("/api/browse", get(api_browse::handle_browse))
         .route("/api/browse/mkdir", post(api_browse::handle_browse_mkdir))
         .route("/api/browse/rmdir", delete(api_browse::handle_browse_rmdir))
+        .route(
+            "/api/agents/{alias}/workspace/list",
+            get(api_browse::handle_agent_workspace_list),
+        )
+        .route(
+            "/api/agents/{alias}/workspace/read",
+            get(api_browse::handle_agent_workspace_read),
+        )
+        .route(
+            "/api/agents/{alias}/workspace/path",
+            delete(api_browse::handle_agent_workspace_delete),
+        )
+        .route(
+            "/api/agents/{alias}/workspace/move",
+            post(api_browse::handle_agent_workspace_move),
+        )
         .route("/api/skills/bundles", get(api_skills::handle_list_bundles))
         .route(
             "/api/skills/bundles/{alias}/skills",

@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, ChevronRight, FolderOpen, Plus, Sparkles, Trash2 } from 'lucide-react';
 import {
   ApiError,
   deleteMapKey,
@@ -947,13 +947,32 @@ function agentSettingsTabs(
     inMemory(p) ||
     inWorkspace(p);
 
+  const agentAlias = fieldsPrefix.startsWith('agents.')
+    ? fieldsPrefix.slice('agents.'.length)
+    : null;
+
+  const workspaceTab = (
+    <div className="flex flex-col gap-3">
+      {agentAlias && (
+        <Link
+          to={`/agent/${encodeURIComponent(agentAlias)}/workspace`}
+          className="btn-secondary inline-flex items-center gap-2 text-sm px-3 py-1.5 self-start"
+        >
+          <FolderOpen className="h-4 w-4" />
+          Open file explorer →
+        </Link>
+      )}
+      {makeForm(inWorkspace, 'workspace')}
+    </div>
+  );
+
   return [
     { key: 'general', label: 'General', render: () => makeForm(inGeneral, 'general') },
     { key: 'channels', label: 'Channels', render: () => makeForm(inChannels, 'channels') },
     { key: 'bundles', label: 'Bundles', render: () => makeForm(inBundles, 'bundles') },
     { key: 'cron', label: 'Cron', render: () => makeForm(inCron, 'cron') },
     { key: 'memory', label: 'Memory', render: () => makeForm(inMemory, 'memory') },
-    { key: 'workspace', label: 'Workspace', render: () => makeForm(inWorkspace, 'workspace') },
+    { key: 'workspace', label: 'Workspace', render: () => workspaceTab },
     {
       key: 'tuning',
       label: 'Tuning',
