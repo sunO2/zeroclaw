@@ -6,7 +6,6 @@ export const AgentsList = lazy(() => import('../pages/AgentsList'));
 export const Tools = lazy(() => import('../pages/Tools'));
 export const Cron = lazy(() => import('../pages/Cron'));
 export const Integrations = lazy(() => import('../pages/Integrations'));
-export const Memory = lazy(() => import('../pages/Memory'));
 export const Config = lazy(() => import('../pages/Config'));
 export const Cost = lazy(() => import('../pages/Cost'));
 export const Logs = lazy(() => import('../pages/Logs'));

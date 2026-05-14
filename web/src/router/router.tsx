@@ -11,7 +11,6 @@ import {
   Doctor,
   Integrations,
   Logs,
-  Memory,
   Onboard,
   Pairing,
   Tools,
@@ -39,7 +38,7 @@ export const Router = () => (
         <Route path="/tools" element={<Tools />} />
         <Route path="/cron" element={<Cron />} />
         <Route path="/integrations" element={<Integrations />} />
-        <Route path="/memory" element={<Memory />} />
+        <Route path="/memory" element={<Navigate to="/?tab=memories" replace />} />
         <Route path="/config" element={<Config />} />
         <Route path="/config/:section" element={<Config />} />
         <Route path="/config/:section/:type" element={<Config />} />

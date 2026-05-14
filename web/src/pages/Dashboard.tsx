@@ -38,6 +38,7 @@ import {
   getSessionMessages,
   deleteSession,
   getMemory,
+  storeMemory,
   deleteMemory,
   getMapKeys,
 } from '@/lib/api';
@@ -101,11 +102,11 @@ function ProcessRamCard({ process }: { process?: ProcessStats }) {
         className="text-lg font-semibold truncate"
         style={{ color: 'var(--pc-text-primary)' }}
       >
-        {pct !== null ? `${pct.toFixed(pct < 1 ? 2 : 1)}%` : supported ? formatBytes(process!.rss_bytes) : '—'}
+        {supported ? formatBytes(process!.rss_bytes) : '—'}
       </p>
       <p className="text-sm truncate" style={{ color: 'var(--pc-text-muted)' }}>
-        {hasTotal
-          ? `${formatBytes(process!.rss_bytes)} / ${formatBytes(process!.system_ram_total_bytes)}`
+        {pct !== null
+          ? `${pct.toFixed(pct < 1 ? 2 : 1)}% of ${formatBytes(process!.system_ram_total_bytes)}`
           : supported
             ? 'resident (zeroclaw)'
             : 'not supported on this platform'}
@@ -1544,6 +1545,12 @@ function MemoriesTab() {
   const [knownAgents, setKnownAgents] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [formKey, setFormKey] = useState('');
+  const [formContent, setFormContent] = useState('');
+  const [formCategory, setFormCategory] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const toggleExpanded = (id: string) =>
     setExpanded((prev) => {
@@ -1609,6 +1616,31 @@ function MemoriesTab() {
     }
   };
 
+  const handleAdd = async () => {
+    if (!formKey.trim() || !formContent.trim()) {
+      setFormError('Key and content are required');
+      return;
+    }
+    setSubmitting(true);
+    setFormError(null);
+    try {
+      await storeMemory(
+        formKey.trim(),
+        formContent.trim(),
+        formCategory.trim() || undefined,
+      );
+      setShowAddForm(false);
+      setFormKey('');
+      setFormContent('');
+      setFormCategory('');
+      reload();
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-48">
@@ -1656,14 +1688,18 @@ function MemoriesTab() {
         >
           {entries.length}
         </span>
-        <Link
-          to="/memory"
-          className="text-xs ml-2 hover:underline"
-          style={{ color: 'var(--pc-text-muted)' }}
-          title="Full Memory page with the add-entry form"
+        <button
+          type="button"
+          onClick={() => {
+            setShowAddForm(true);
+            setFormError(null);
+          }}
+          className="btn-electric text-xs ml-2 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg"
+          title="Add a memory entry"
         >
-          + add / manage
-        </Link>
+          <Plus className="h-3 w-3" />
+          Add memory
+        </button>
 
         <div className="ml-auto flex items-center gap-2 flex-wrap">
           <div className="relative">
@@ -1780,15 +1816,124 @@ function MemoriesTab() {
           ))}
         </div>
       )}
+
+      {showAddForm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.5)' }}
+          onClick={() => setShowAddForm(false)}
+        >
+          <div
+            className="card p-6 w-full max-w-md"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3
+                className="text-lg font-semibold"
+                style={{ color: 'var(--pc-text-primary)' }}
+              >
+                Add memory
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowAddForm(false)}
+                className="p-1 rounded-lg hover:bg-[var(--pc-hover)]"
+                style={{ color: 'var(--pc-text-muted)' }}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {formError && (
+              <div
+                className="mb-4 rounded-xl border p-3 text-sm"
+                style={{
+                  background: 'var(--color-status-error-alpha-08)',
+                  borderColor: 'var(--color-status-error-alpha-20)',
+                  color: 'var(--color-status-error)',
+                }}
+              >
+                {formError}
+              </div>
+            )}
+            <div className="space-y-4">
+              <div>
+                <label
+                  className="block text-xs font-semibold mb-1.5 uppercase tracking-wider"
+                  style={{ color: 'var(--pc-text-secondary)' }}
+                >
+                  Key <span style={{ color: 'var(--color-status-error)' }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  value={formKey}
+                  onChange={(e) => setFormKey(e.target.value)}
+                  placeholder="e.g. user_preferences"
+                  className="input-electric w-full px-3 py-2.5 text-sm"
+                />
+              </div>
+              <div>
+                <label
+                  className="block text-xs font-semibold mb-1.5 uppercase tracking-wider"
+                  style={{ color: 'var(--pc-text-secondary)' }}
+                >
+                  Content <span style={{ color: 'var(--color-status-error)' }}>*</span>
+                </label>
+                <textarea
+                  value={formContent}
+                  onChange={(e) => setFormContent(e.target.value)}
+                  placeholder="Memory content…"
+                  rows={4}
+                  className="input-electric w-full px-3 py-2.5 text-sm resize-none"
+                />
+              </div>
+              <div>
+                <label
+                  className="block text-xs font-semibold mb-1.5 uppercase tracking-wider"
+                  style={{ color: 'var(--pc-text-secondary)' }}
+                >
+                  Category (optional)
+                </label>
+                <input
+                  type="text"
+                  value={formCategory}
+                  onChange={(e) => setFormCategory(e.target.value)}
+                  placeholder="e.g. preferences, context, facts"
+                  className="input-electric w-full px-3 py-2.5 text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                type="button"
+                onClick={() => setShowAddForm(false)}
+                className="btn-secondary px-4 py-2 text-sm font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAdd}
+                disabled={submitting}
+                className="btn-electric px-4 py-2 text-sm font-medium disabled:opacity-50"
+              >
+                {submitting ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// Long memory bodies (compressed_context rows, full conversation dumps) can
-// be thousands of lines. Collapse anything past ~6 lines / 600 chars by
-// default and surface an Expand/Collapse toggle.
-const MEMORY_PREVIEW_CHARS = 600;
-const MEMORY_PREVIEW_NEWLINES = 6;
+// Collapse anything that wouldn't fit comfortably inline. The thresholds
+// are deliberately low — a one-paragraph note (~280 chars on one line) is
+// fine, but anything multi-line or longer gets a toggle so the operator
+// can decide. Avoids the prior bug where a row with 4 newlines and 250
+// chars looked truncated (trailing `…` in the markdown body) but had no
+// expand affordance.
+const MEMORY_PREVIEW_CHARS = 280;
+const MEMORY_PREVIEW_NEWLINES = 2;
 
 function MemoryContent({
   content,
@@ -1828,11 +1973,19 @@ function MemoryContent({
 }
 
 function truncateForPreview(content: string): string {
-  const byNewline = content.split('\n').slice(0, MEMORY_PREVIEW_NEWLINES).join('\n');
-  const truncated = byNewline.length > MEMORY_PREVIEW_CHARS
-    ? `${byNewline.slice(0, MEMORY_PREVIEW_CHARS)}…`
-    : `${byNewline}\n…`;
-  return truncated;
+  // Slice on newlines first so we don't cut mid-paragraph. If that already
+  // dropped lines, the `…` reflects real omission. Then char-limit if the
+  // newline slice is still too wide; the slice + `…` always means there's
+  // more behind the cut.
+  const lines = content.split('\n');
+  const slicedByNewline = lines.length > MEMORY_PREVIEW_NEWLINES;
+  const byNewline = slicedByNewline
+    ? lines.slice(0, MEMORY_PREVIEW_NEWLINES).join('\n')
+    : content;
+  if (byNewline.length > MEMORY_PREVIEW_CHARS) {
+    return `${byNewline.slice(0, MEMORY_PREVIEW_CHARS).trimEnd()}…`;
+  }
+  return slicedByNewline ? `${byNewline}\n…` : byNewline;
 }
 
 // ---------------------------------------------------------------------------
