@@ -106,6 +106,7 @@ Every workspace crate carries a stability tier per the Microkernel Architecture 
 |-------|------|-------|
 | `zeroclaw-api` | Experimental | Stable at v1.0.0 (formal milestone) |
 | `zeroclaw-config` | Beta | Stable at v0.8.0 |
+| `zeroclaw-log` | Beta | Unified log emission + JSONL persistence + broadcast hook |
 | `zeroclaw-providers` | Beta | — |
 | `zeroclaw-memory` | Beta | — |
 | `zeroclaw-infra` | Beta | — |
@@ -129,6 +130,7 @@ Tiers are promoted, never demoted, through deliberate team decision.
 - `src/lib.rs` — module re-exports and CLI command enum definitions
 - `crates/zeroclaw-api/` — public trait definitions (Provider, Channel, Tool, Memory, Observer, Peripheral)
 - `crates/zeroclaw-config/` — schema, config loading/merging
+- `crates/zeroclaw-log/` — unified log surface (record! macro, LogEvent schema, JSONL persistence, broadcast hook, Observer bridge)
 - `crates/zeroclaw-macros/` — Configurable derive macro
 - `crates/zeroclaw-providers/` — model providers and resilient wrapper
 - `crates/zeroclaw-channels/` — messaging platform integrations (30+ channels)

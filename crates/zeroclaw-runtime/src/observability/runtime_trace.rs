@@ -1,208 +1,41 @@
-use anyhow::Result;
-use chrono::{Local, Utc};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, RwLock};
-use uuid::Uuid;
-use zeroclaw_config::schema::ObservabilityConfig;
+//! Compatibility shim: the actual log surface lives in `zeroclaw-log`.
+//! This module is retained only so existing in-tree callers
+//! (`agent::loop_`, the gateway's `ws.rs`, the channel orchestrator, and
+//! the doctor command) can keep importing `runtime_trace::...` while the
+//! workspace transitions to direct `zeroclaw_log::...` use.
+//!
+//! Everything here forwards to `zeroclaw_log` with no behavior change.
+//! New call sites should reach for `zeroclaw_log::record!` directly.
 
-const DEFAULT_TRACE_REL_PATH: &str = "state/runtime-trace.jsonl";
+use std::path::Path;
 
-/// Runtime trace storage policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeTraceStorageMode {
-    None,
-    Rolling,
-    Full,
+use zeroclaw_log::{EventCategory, EventOutcome, LogEvent, Severity};
+
+pub use zeroclaw_log::{LogEvent as RuntimeTraceEvent, LogFilter, LogPage};
+
+/// Initialize log persistence from the observability config. Forwards to
+/// [`zeroclaw_log::init_from_config`].
+pub fn init_from_config(
+    config: &zeroclaw_config::schema::ObservabilityConfig,
+    workspace_dir: &Path,
+) {
+    zeroclaw_log::init_from_config(config, workspace_dir);
 }
 
-impl RuntimeTraceStorageMode {
-    fn from_raw(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "rolling" => Self::Rolling,
-            "full" => Self::Full,
-            _ => Self::None,
-        }
-    }
+/// Resolve the configured log path (used by the doctor command).
+pub fn resolve_trace_path(
+    config: &zeroclaw_config::schema::ObservabilityConfig,
+    workspace_dir: &Path,
+) -> std::path::PathBuf {
+    let policy = zeroclaw_log::ResolvedPolicy::from_config(config, workspace_dir);
+    policy.path
 }
 
-/// Structured runtime trace event for tool-call and model-reply diagnostics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeTraceEvent {
-    pub id: String,
-    pub timestamp: String,
-    pub event_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub success: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    /// Owning agent's alias. `None` on system-level traces (boot,
-    /// migration, scheduler ticks not bound to any specific agent) and
-    /// on legacy entries written before the alias field existed. The
-    /// agent loop binds the alias at run() entry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_alias: Option<String>,
-    #[serde(default)]
-    pub payload: Value,
-}
-
-struct RuntimeTraceLogger {
-    mode: RuntimeTraceStorageMode,
-    max_entries: usize,
-    path: PathBuf,
-    write_lock: std::sync::Mutex<()>,
-}
-
-impl RuntimeTraceLogger {
-    fn new(mode: RuntimeTraceStorageMode, max_entries: usize, path: PathBuf) -> Self {
-        Self {
-            mode,
-            max_entries: max_entries.max(1),
-            path,
-            write_lock: std::sync::Mutex::new(()),
-        }
-    }
-
-    fn append(&self, event: &RuntimeTraceEvent) -> Result<()> {
-        if self.mode == RuntimeTraceStorageMode::None {
-            return Ok(());
-        }
-
-        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let line = serde_json::to_string(event)?;
-        let mut options = OpenOptions::new();
-        options.create(true).append(true);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-
-        let mut file = options.open(&self.path)?;
-        writeln!(file, "{line}")?;
-        file.sync_data()?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
-        }
-
-        if self.mode == RuntimeTraceStorageMode::Rolling {
-            self.trim_to_last_entries()?;
-        }
-
-        Ok(())
-    }
-
-    fn trim_to_last_entries(&self) -> Result<()> {
-        let raw = fs::read_to_string(&self.path).unwrap_or_default();
-        let lines: Vec<&str> = raw
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-
-        if lines.len() <= self.max_entries {
-            return Ok(());
-        }
-
-        let keep_from = lines.len().saturating_sub(self.max_entries);
-        let kept = &lines[keep_from..];
-        let mut rewritten = kept.join("\n");
-        rewritten.push('\n');
-
-        let tmp = self.path.with_extension(format!(
-            "tmp.{}.{}",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        fs::write(&tmp, rewritten)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-
-        fs::rename(tmp, &self.path)?;
-        Ok(())
-    }
-}
-
-static TRACE_LOGGER: LazyLock<RwLock<Option<Arc<RuntimeTraceLogger>>>> =
-    LazyLock::new(|| RwLock::new(None));
-
-/// Resolve runtime trace storage mode from config.
-pub fn storage_mode_from_config(config: &ObservabilityConfig) -> RuntimeTraceStorageMode {
-    let mode = RuntimeTraceStorageMode::from_raw(&config.runtime_trace_mode);
-    if mode == RuntimeTraceStorageMode::None
-        && !config.runtime_trace_mode.trim().is_empty()
-        && !config.runtime_trace_mode.eq_ignore_ascii_case("none")
-    {
-        tracing::warn!(
-            mode = %config.runtime_trace_mode,
-            "Unknown observability.runtime_trace_mode; falling back to none"
-        );
-    }
-    mode
-}
-
-/// Resolve runtime trace path from config.
-pub fn resolve_trace_path(config: &ObservabilityConfig, workspace_dir: &Path) -> PathBuf {
-    let raw = config.runtime_trace_path.trim();
-    let fallback = workspace_dir.join(DEFAULT_TRACE_REL_PATH);
-    if raw.is_empty() {
-        return fallback;
-    }
-
-    let configured = PathBuf::from(raw);
-    if configured.is_absolute() {
-        configured
-    } else {
-        workspace_dir.join(configured)
-    }
-}
-
-/// Initialize (or disable) runtime trace logging.
-pub fn init_from_config(config: &ObservabilityConfig, workspace_dir: &Path) {
-    let mode = storage_mode_from_config(config);
-    let logger = if mode == RuntimeTraceStorageMode::None {
-        None
-    } else {
-        Some(Arc::new(RuntimeTraceLogger::new(
-            mode,
-            config.runtime_trace_max_entries.max(1),
-            resolve_trace_path(config, workspace_dir),
-        )))
-    };
-
-    let mut guard = TRACE_LOGGER.write().unwrap_or_else(|e| e.into_inner());
-    *guard = logger;
-}
-
-/// Record a runtime trace event.
-///
-/// Forwards to [`record_event_with_agent`] with `agent_alias = None`.
-/// Sites that have a bound agent alias in scope should call
-/// [`record_event_with_agent`] directly for proper attribution.
+/// Legacy entry point. Bridges the pre-v0.8.0 positional-arg interface to
+/// the new structured [`LogEvent`]. Prefer `zeroclaw_log::record!` at new
+/// call sites — it handles alias-bound splitting automatically and lets
+/// `tracing::event!` carry the correct call-site source info.
+#[allow(clippy::too_many_arguments)]
 pub fn record_event(
     event_type: &str,
     channel: Option<&str>,
@@ -211,7 +44,7 @@ pub fn record_event(
     turn_id: Option<&str>,
     success: Option<bool>,
     message: Option<&str>,
-    payload: Value,
+    payload: serde_json::Value,
 ) {
     record_event_with_agent(
         event_type,
@@ -226,10 +59,6 @@ pub fn record_event(
     );
 }
 
-/// Record a runtime trace event with an explicit owning agent alias.
-/// The alias appears as a structured field on the emitted event so
-/// multi-agent runs are grep-filterable by alias and otel/dora/
-/// prometheus exports carry the attribution.
 #[allow(clippy::too_many_arguments)]
 pub fn record_event_with_agent(
     event_type: &str,
@@ -240,218 +69,76 @@ pub fn record_event_with_agent(
     success: Option<bool>,
     message: Option<&str>,
     agent_alias: Option<&str>,
-    payload: Value,
+    payload: serde_json::Value,
 ) {
-    let logger = TRACE_LOGGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let Some(logger) = logger else {
-        return;
+    let severity = if matches!(success, Some(false)) {
+        Severity::Warn
+    } else {
+        Severity::Info
     };
-
-    let event = RuntimeTraceEvent {
-        id: Uuid::new_v4().to_string(),
-        timestamp: Local::now().to_rfc3339(),
-        event_type: event_type.to_string(),
-        channel: channel.map(str::to_string),
-        model_provider: model_provider.map(str::to_string),
-        model: model.map(str::to_string),
-        turn_id: turn_id.map(str::to_string),
-        success,
-        message: message.map(str::to_string),
-        agent_alias: agent_alias.map(str::to_string),
-        payload,
+    let category = category_for_action(event_type);
+    let mut event = LogEvent::new(severity, event_type, category);
+    let outcome = match success {
+        Some(true) => EventOutcome::Success,
+        Some(false) => EventOutcome::Failure,
+        None => EventOutcome::Unknown,
     };
-
-    if let Err(err) = logger.append(&event) {
-        tracing::warn!("Failed to write runtime trace event: {err}");
+    event.set_outcome(outcome);
+    if let Some(channel) = channel {
+        event.zeroclaw.set_channel_composite(channel);
     }
+    if let Some(mp) = model_provider {
+        event.zeroclaw.set_model_provider_composite(mp);
+    }
+    if let Some(model) = model {
+        event.zeroclaw.model = Some(model.to_string());
+    }
+    if let Some(turn) = turn_id {
+        event.trace_id = Some(turn.to_string());
+    }
+    if let Some(agent) = agent_alias {
+        event.zeroclaw.agent_alias = Some(agent.to_string());
+    }
+    if let Some(msg) = message {
+        event.message = Some(msg.to_string());
+    }
+    event.attributes = payload;
+    zeroclaw_log::record_event(event);
 }
 
-/// Load recent runtime trace events from storage.
+/// Load a page of events. Replaces the old `load_events` shape with a
+/// thin wrapper around the new paginated reader. The legacy
+/// `event_filter` (single action match) and `contains` (substring) args
+/// map straight onto the new [`LogFilter`] fields.
 pub fn load_events(
     path: &Path,
     limit: usize,
     event_filter: Option<&str>,
     contains: Option<&str>,
-) -> Result<Vec<RuntimeTraceEvent>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let raw = fs::read_to_string(path)?;
-    let mut events = Vec::new();
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        match serde_json::from_str::<RuntimeTraceEvent>(trimmed) {
-            Ok(event) => events.push(event),
-            Err(err) => tracing::warn!("Skipping malformed runtime trace line: {err}"),
-        }
-    }
-
-    if let Some(filter) = event_filter.map(str::trim).filter(|f| !f.is_empty()) {
-        let normalized = filter.to_ascii_lowercase();
-        events.retain(|event| event.event_type.to_ascii_lowercase() == normalized);
-    }
-
-    if let Some(needle) = contains.map(str::trim).filter(|s| !s.is_empty()) {
-        let needle = needle.to_ascii_lowercase();
-        events.retain(|event| {
-            let mut haystack = format!(
-                "{} {} {}",
-                event.event_type,
-                event.message.as_deref().unwrap_or_default(),
-                event.payload
-            );
-            if let Some(channel) = &event.channel {
-                haystack.push_str(channel);
-            }
-            if let Some(model_provider) = &event.model_provider {
-                haystack.push_str(model_provider);
-            }
-            if let Some(model) = &event.model {
-                haystack.push_str(model);
-            }
-            haystack.to_ascii_lowercase().contains(&needle)
-        });
-    }
-
-    if events.len() > limit {
-        let keep_from = events.len() - limit;
-        events = events.split_off(keep_from);
-    }
-
-    events.reverse();
-    Ok(events)
+) -> anyhow::Result<Vec<LogEvent>> {
+    let filter = LogFilter {
+        action: event_filter.map(str::to_string),
+        q: contains.map(str::to_string),
+        ..LogFilter::default()
+    };
+    let page = zeroclaw_log::load_page(path, &filter, limit)?;
+    Ok(page.events)
 }
 
-/// Find a runtime trace event by id.
-pub fn find_event_by_id(path: &Path, id: &str) -> Result<Option<RuntimeTraceEvent>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let raw = fs::read_to_string(path)?;
-    for line in raw.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(event) = serde_json::from_str::<RuntimeTraceEvent>(trimmed)
-            && event.id == id
-        {
-            return Ok(Some(event));
-        }
-    }
-
-    Ok(None)
+/// Lookup a single event by id.
+pub fn find_event_by_id(path: &Path, id: &str) -> anyhow::Result<Option<LogEvent>> {
+    zeroclaw_log::find_event_by_id(path, id)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_observability_config() -> ObservabilityConfig {
-        ObservabilityConfig {
-            backend: "none".to_string(),
-            otel_endpoint: None,
-            otel_service_name: None,
-            otel_headers: None,
-            runtime_trace_mode: "rolling".to_string(),
-            runtime_trace_path: "state/runtime-trace.jsonl".to_string(),
-            runtime_trace_max_entries: 3,
-        }
-    }
-
-    #[test]
-    fn resolve_trace_path_relative_joins_workspace() {
-        let cfg = test_observability_config();
-        let workspace = tempfile::tempdir().unwrap();
-        let path = resolve_trace_path(&cfg, workspace.path());
-        assert_eq!(path, workspace.path().join("state/runtime-trace.jsonl"));
-    }
-
-    #[test]
-    fn storage_mode_parses_known_values() {
-        let mut cfg = test_observability_config();
-        cfg.runtime_trace_mode = "none".into();
-        assert_eq!(
-            storage_mode_from_config(&cfg),
-            RuntimeTraceStorageMode::None
-        );
-
-        cfg.runtime_trace_mode = "rolling".into();
-        assert_eq!(
-            storage_mode_from_config(&cfg),
-            RuntimeTraceStorageMode::Rolling
-        );
-
-        cfg.runtime_trace_mode = "full".into();
-        assert_eq!(
-            storage_mode_from_config(&cfg),
-            RuntimeTraceStorageMode::Full
-        );
-    }
-
-    #[test]
-    fn rolling_mode_keeps_latest_entries() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("trace.jsonl");
-        let logger = RuntimeTraceLogger::new(RuntimeTraceStorageMode::Rolling, 2, path.clone());
-
-        for i in 0..5 {
-            let event = RuntimeTraceEvent {
-                id: format!("id-{i}"),
-                timestamp: Utc::now().to_rfc3339(),
-                event_type: "test".into(),
-                channel: None,
-                model_provider: None,
-                model: None,
-                turn_id: None,
-                success: None,
-                message: Some(format!("event-{i}")),
-                payload: serde_json::json!({ "i": i }),
-                agent_alias: None,
-            };
-            logger.append(&event).unwrap();
-        }
-
-        let events = load_events(&path, 10, None, None).unwrap();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].message.as_deref(), Some("event-4"));
-        assert_eq!(events[1].message.as_deref(), Some("event-3"));
-    }
-
-    #[test]
-    fn find_event_by_id_returns_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("trace.jsonl");
-        let logger = RuntimeTraceLogger::new(RuntimeTraceStorageMode::Full, 100, path.clone());
-
-        let target_id = "target-event";
-        let event = RuntimeTraceEvent {
-            id: target_id.into(),
-            timestamp: Utc::now().to_rfc3339(),
-            event_type: "tool_call_result".into(),
-            channel: Some("telegram".into()),
-            model_provider: Some("openrouter".into()),
-            model: Some("x".into()),
-            turn_id: Some("turn-1".into()),
-            success: Some(false),
-            message: Some("boom".into()),
-            payload: serde_json::json!({ "error": "boom" }),
-            agent_alias: None,
-        };
-        logger.append(&event).unwrap();
-
-        let found = find_event_by_id(&path, target_id).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().id, target_id);
+fn category_for_action(action: &str) -> EventCategory {
+    match action {
+        "llm_request" | "agent_start" | "agent_end" => EventCategory::Agent,
+        "tool_call" | "tool_call_start" | "tool_call_result" => EventCategory::Tool,
+        "channel_message_inbound" | "channel_send" => EventCategory::Channel,
+        "cron_run" => EventCategory::Cron,
+        "memory_store" | "memory_recall" | "memory_forget" => EventCategory::Memory,
+        "session_open" | "session_close" | "gateway_ws_turn" => EventCategory::Session,
+        "error" => EventCategory::System,
+        _ => EventCategory::System,
     }
 }

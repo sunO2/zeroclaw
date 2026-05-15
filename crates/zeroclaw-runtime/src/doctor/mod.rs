@@ -386,7 +386,7 @@ pub fn run_traces(
     if !path.exists() {
         println!(
             "Runtime trace file not found: {}.\n\
-             Enable [observability] runtime_trace_mode = \"rolling\" or \"full\", then reproduce the issue.",
+             Enable [observability] log_persistence = \"rolling\" or \"full\", then reproduce the issue.",
             path.display()
         );
         return Ok(());
@@ -419,16 +419,16 @@ pub fn run_traces(
     println!();
 
     for event in events {
-        let success = match event.success {
-            Some(true) => "ok",
-            Some(false) => "fail",
-            None => "-",
+        let outcome = match event.event.outcome.as_str() {
+            "success" => "ok",
+            "failure" => "fail",
+            _ => "-",
         };
         let message = event.message.unwrap_or_default();
         let preview = truncate_for_display(&message, 80);
         println!(
             "- {} | {} | {} | {} | {}",
-            event.timestamp, event.id, event.event_type, success, preview
+            event.timestamp, event.id, event.event.action, outcome, preview
         );
     }
 

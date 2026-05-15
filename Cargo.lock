@@ -13224,6 +13224,7 @@ dependencies = [
  "zeroclaw-api",
  "zeroclaw-config",
  "zeroclaw-infra",
+ "zeroclaw-log",
  "zeroclaw-memory",
  "zeroclaw-providers",
  "zeroclaw-runtime",
@@ -13335,6 +13336,7 @@ dependencies = [
  "zeroclaw-config",
  "zeroclaw-hardware",
  "zeroclaw-infra",
+ "zeroclaw-log",
  "zeroclaw-memory",
  "zeroclaw-plugins",
  "zeroclaw-providers",
@@ -13387,6 +13389,24 @@ dependencies = [
  "tokio",
  "tracing",
  "zeroclaw-api",
+]
+
+[[package]]
+name = "zeroclaw-log"
+version = "0.7.5"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroclaw-api",
+ "zeroclaw-config",
 ]
 
 [[package]]
@@ -13569,6 +13589,7 @@ dependencies = [
  "zeroclaw-api",
  "zeroclaw-config",
  "zeroclaw-infra",
+ "zeroclaw-log",
  "zeroclaw-macros",
  "zeroclaw-memory",
  "zeroclaw-plugins",

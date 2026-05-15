@@ -1106,6 +1106,13 @@ pub async fn run_gateway(
     );
     zeroclaw_runtime::observability::set_broadcast_hook(broadcast_layer);
 
+    // Install the same broadcast sender as zeroclaw-log's canonical
+    // hook so that every event emitted through `record!` / `record_event`
+    // also reaches `/api/events`. The Observer-trait hook above stays
+    // wired for legacy `observer.record_event(ObserverEvent::...)`
+    // callers that haven't migrated to `record!` yet.
+    zeroclaw_log::set_broadcast_hook(event_tx.clone());
+
     // Bound into AppState. Not a broadcaster — the broadcaster is the
     // `broadcast_layer` installed above as the global hook. This is the
     // configured backend (Log/Prometheus/...) wrapped by `TeeObserver`,
@@ -1289,6 +1296,10 @@ pub async fn run_gateway(
         .route(
             "/api/agents/{alias}/workspace/move",
             post(api_browse::handle_agent_workspace_move),
+        )
+        .route(
+            "/api/agents/{alias}/workspace/mkdir",
+            post(api_browse::handle_agent_workspace_mkdir),
         )
         .route("/api/skills/bundles", get(api_skills::handle_list_bundles))
         .route(

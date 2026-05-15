@@ -2671,25 +2671,22 @@ async fn process_channel_message(
         return;
     }
 
-    println!(
-        "  💬 [{}] from {}: {}",
-        msg.channel,
-        msg.sender,
-        truncate_with_ellipsis(&msg.content, 80)
-    );
-    runtime_trace::record_event(
-        "channel_message_inbound",
-        Some(msg.channel.as_str()),
-        None,
-        None,
-        None,
-        None,
-        None,
-        serde_json::json!({
+    let channel_composite = match &msg.channel_alias {
+        Some(alias) => format!("{}.{}", msg.channel, alias),
+        None => msg.channel.clone(),
+    };
+    zeroclaw_log::record!(
+        INFO,
+        action: "channel_message_inbound",
+        category: "channel",
+        channel: channel_composite.as_str(),
+        message: "channel inbound message",
+        attrs: serde_json::json!({
             "sender": msg.sender,
             "message_id": msg.id,
             "reply_target": msg.reply_target,
-            "content_preview": truncate_with_ellipsis(&msg.content, 160),
+            "content": msg.content,
+            "content_bytes": msg.content.len(),
         }),
     );
 
@@ -6420,14 +6417,11 @@ pub async fn start_channels(
                 effective_backend,
                 if config.memory.auto_save { "on" } else { "off" }
             );
-            println!(
-                "  📡 Channels: {}",
-                channels
-                    .iter()
-                    .map(|c| c.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            let channel_labels: Vec<String> = configured_channels
+                .iter()
+                .map(|cc| composite_channel_key(cc.channel.name(), cc.alias.as_deref()))
+                .collect();
+            println!("  📡 Channels: {}", channel_labels.join(", "));
             println!("  🤖 Agents:   {}", enabled_agents.join(", "));
             println!();
             println!("  Listening for messages... (Ctrl+C to stop)");

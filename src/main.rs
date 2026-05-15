@@ -2044,7 +2044,7 @@ async fn main() -> Result<()> {
             println!("📊 Observability:  {}", config.observability.backend);
             println!(
                 "🧾 Trace storage:  {} ({})",
-                config.observability.runtime_trace_mode, config.observability.runtime_trace_path
+                config.observability.log_persistence, config.observability.log_persistence_path
             );
             // Per-agent autonomy: each enabled agent picks its own
             // risk_profile, so list them rather than collapsing to one.

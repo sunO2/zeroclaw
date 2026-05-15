@@ -2936,6 +2936,9 @@ pub struct ChannelAliasInfo {
     /// The agent whose `channels` list contains `<type>.<alias>`. `None`
     /// when the block is orphaned (config error caught at startup).
     pub owning_agent: Option<String>,
+    /// Resolved value of `[channels.<type>.<alias>].enabled` at scan time.
+    /// `false` when the field is unset (matches the serde bool default).
+    pub enabled: bool,
 }
 
 impl Config {
@@ -3078,22 +3081,28 @@ impl Config {
     /// keys; not kebab-converted.
     #[must_use]
     pub fn channels_by_alias(&self) -> Vec<ChannelAliasInfo> {
-        use std::collections::BTreeSet;
-        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        use std::collections::BTreeMap;
+        let mut seen: BTreeMap<(String, String), bool> = BTreeMap::new();
         for field in self.prop_fields() {
             let parts: Vec<&str> = field.name.split('.').collect();
-            if parts.len() >= 4 && parts[0] == "channels" {
-                seen.insert((parts[1].to_string(), parts[2].to_string()));
+            if parts.len() < 4 || parts[0] != "channels" {
+                continue;
+            }
+            let key = (parts[1].to_string(), parts[2].to_string());
+            let entry = seen.entry(key).or_insert(false);
+            if parts.len() == 4 && parts[3] == "enabled" {
+                *entry = field.display_value == "true";
             }
         }
         seen.into_iter()
-            .map(|(channel_type, alias)| {
+            .map(|((channel_type, alias), enabled)| {
                 let composite = format!("{channel_type}.{alias}");
                 let owning_agent = self.agent_for_channel(&composite).map(str::to_string);
                 ChannelAliasInfo {
                     channel_type,
                     alias,
                     owning_agent,
+                    enabled,
                 }
             })
             .collect()
@@ -8271,18 +8280,44 @@ pub struct ObservabilityConfig {
     #[serde(default)]
     pub otel_headers: Option<std::collections::HashMap<String, String>>,
 
-    /// Runtime trace storage mode: "none" | "rolling" | "full".
-    /// Controls whether model replies and tool-call diagnostics are persisted.
-    #[serde(default = "default_runtime_trace_mode")]
-    pub runtime_trace_mode: String,
+    /// Log persistence mode: "none" | "rolling" | "full".
+    /// Controls whether every event passing through `zeroclaw_log::record!`
+    /// is appended to the on-disk JSONL log.
+    #[serde(default = "default_log_persistence", alias = "runtime_trace_mode")]
+    pub log_persistence: String,
 
-    /// Runtime trace file path. Relative paths are resolved under workspace_dir.
-    #[serde(default = "default_runtime_trace_path")]
-    pub runtime_trace_path: String,
+    /// Log persistence file path. Relative paths resolve under workspace_dir.
+    #[serde(default = "default_log_persistence_path", alias = "runtime_trace_path")]
+    pub log_persistence_path: String,
 
-    /// Maximum entries retained when runtime_trace_mode = "rolling".
-    #[serde(default = "default_runtime_trace_max_entries")]
-    pub runtime_trace_max_entries: usize,
+    /// Maximum entries retained when `log_persistence = "rolling"`.
+    #[serde(
+        default = "default_log_persistence_max_entries",
+        alias = "runtime_trace_max_entries"
+    )]
+    pub log_persistence_max_entries: usize,
+
+    /// Tool I/O capture policy: "off" | "redacted" | "full".
+    /// - `off`: only tool name + outcome + duration land in the log.
+    /// - `redacted` (default): tool input + output are leak-scanned and
+    ///   truncated at `log_tool_io_truncate_bytes` before persisting.
+    /// - `full`: full input + output, still leak-scanned. For operators
+    ///   who need replay fidelity and accept the disk cost.
+    #[serde(default = "default_log_tool_io")]
+    pub log_tool_io: String,
+
+    /// Truncate the captured tool input and output at this many bytes when
+    /// `log_tool_io = "redacted"`. Truncated events carry an explicit
+    /// `tool_output_truncated: true` flag plus `tool_output_original_bytes`.
+    #[serde(default = "default_log_tool_io_truncate_bytes")]
+    pub log_tool_io_truncate_bytes: usize,
+
+    /// Tool names whose I/O is never logged beyond name + outcome + duration
+    /// regardless of `log_tool_io`. Use for tools whose I/O is intrinsically
+    /// sensitive (e.g. memory recall against personal namespaces, agent
+    /// secret reads). Empty by default.
+    #[serde(default)]
+    pub log_tool_io_denylist: Vec<String>,
 }
 
 impl Default for ObservabilityConfig {
@@ -8292,23 +8327,34 @@ impl Default for ObservabilityConfig {
             otel_endpoint: None,
             otel_service_name: None,
             otel_headers: None,
-            runtime_trace_mode: default_runtime_trace_mode(),
-            runtime_trace_path: default_runtime_trace_path(),
-            runtime_trace_max_entries: default_runtime_trace_max_entries(),
+            log_persistence: default_log_persistence(),
+            log_persistence_path: default_log_persistence_path(),
+            log_persistence_max_entries: default_log_persistence_max_entries(),
+            log_tool_io: default_log_tool_io(),
+            log_tool_io_truncate_bytes: default_log_tool_io_truncate_bytes(),
+            log_tool_io_denylist: Vec::new(),
         }
     }
 }
 
-fn default_runtime_trace_mode() -> String {
+fn default_log_persistence() -> String {
     "none".to_string()
 }
 
-fn default_runtime_trace_path() -> String {
+fn default_log_persistence_path() -> String {
     "state/runtime-trace.jsonl".to_string()
 }
 
-fn default_runtime_trace_max_entries() -> usize {
+fn default_log_persistence_max_entries() -> usize {
     200
+}
+
+fn default_log_tool_io() -> String {
+    "redacted".to_string()
+}
+
+fn default_log_tool_io_truncate_bytes() -> usize {
+    8192
 }
 
 // ── Hooks ────────────────────────────────────────────────────────
@@ -15093,9 +15139,12 @@ mod tests {
     async fn observability_config_default() {
         let o = ObservabilityConfig::default();
         assert_eq!(o.backend, "none");
-        assert_eq!(o.runtime_trace_mode, "none");
-        assert_eq!(o.runtime_trace_path, "state/runtime-trace.jsonl");
-        assert_eq!(o.runtime_trace_max_entries, 200);
+        assert_eq!(o.log_persistence, "none");
+        assert_eq!(o.log_persistence_path, "state/runtime-trace.jsonl");
+        assert_eq!(o.log_persistence_max_entries, 200);
+        assert_eq!(o.log_tool_io, "redacted");
+        assert_eq!(o.log_tool_io_truncate_bytes, 8192);
+        assert!(o.log_tool_io_denylist.is_empty());
     }
 
     #[test]
@@ -15565,7 +15614,7 @@ auto_save = true
 
         assert_eq!(parsed.providers.models.len(), config.providers.models.len());
         assert_eq!(parsed.observability.backend, "log");
-        assert_eq!(parsed.observability.runtime_trace_mode, "none");
+        assert_eq!(parsed.observability.log_persistence, "none");
         let default_profile = parsed.risk_profiles.get("default").unwrap();
         assert_eq!(default_profile.level, AutonomyLevel::Full);
         assert!(!default_profile.workspace_only);
@@ -15600,7 +15649,7 @@ default_temperature = 0.7
                 .is_none()
         );
         assert_eq!(parsed.observability.backend, "none");
-        assert_eq!(parsed.observability.runtime_trace_mode, "none");
+        assert_eq!(parsed.observability.log_persistence, "none");
         // Migration synthesizes risk_profiles.default from the legacy
         // [autonomy] block; assert against the named entry rather than a
         // global "active" profile (no such concept exists).
