@@ -75,6 +75,7 @@
 - [Overview](./ops/overview.md)
 - [Service & daemon](./ops/service.md)
 - [Logs & observability](./ops/observability.md)
+- [Cost tracking](./ops/cost-tracking.md)
 - [Troubleshooting](./ops/troubleshooting.md)
 - [Network deployment](./ops/network-deployment.md)
 
