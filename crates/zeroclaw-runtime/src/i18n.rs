@@ -414,7 +414,9 @@ mod tests {
 
     #[test]
     fn skills_install_cli_strings_format_from_fluent() {
-        let en_cases: &[(&str, &[(&str, &str)], &[&str])] = &[
+        type FormatCase<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
+
+        let en_cases: &[FormatCase<'_>] = &[
             (
                 "cli-skills-install-start",
                 &[("source", "example-skill")][..],
@@ -451,7 +453,7 @@ mod tests {
                 ],
             ),
         ];
-        let zh_cn_cases: &[(&str, &[(&str, &str)], &[&str])] = &[
+        let zh_cn_cases: &[FormatCase<'_>] = &[
             (
                 "cli-skills-install-start",
                 &[("source", "example-skill")][..],
