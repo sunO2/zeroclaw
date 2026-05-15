@@ -659,6 +659,7 @@ macro_rules! emit_model_cost_rates_struct {
             $(
                 #[serde(default, skip_serializing_if = "HashMap::is_empty")]
                 #[nested]
+                #[resource_key]
                 pub $field: HashMap<String, super::schema::ModelCostRates>,
             )+
         }
@@ -758,6 +759,7 @@ macro_rules! emit_simple_cost_rates_struct {
             $(
                 #[serde(default, skip_serializing_if = "HashMap::is_empty")]
                 #[nested]
+                #[resource_key]
                 pub $field: HashMap<String, $rate_ty>,
             )+
         }

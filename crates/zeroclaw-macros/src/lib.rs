@@ -125,7 +125,8 @@ fn has_serde_meta(field: &syn::Field, ident: &str) -> bool {
         derived_from_secret,
         display_name,
         description,
-        integration
+        integration,
+        resource_key
     )
 )]
 pub fn derive_configurable(input: TokenStream) -> TokenStream {
@@ -221,6 +222,7 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
         let is_serde_flatten = has_serde_flatten(field);
         let serde_skip = has_serde_skip(field);
         let derived_from_secret = has_attr(field, "derived_from_secret");
+        let is_resource_key = has_attr(field, "resource_key");
 
         // ── Secret handling ──
         if is_secret {
@@ -973,6 +975,11 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                             description: #field_doc,
                         });
                     });
+                    let validate_create = if is_resource_key {
+                        quote! {}
+                    } else {
+                        quote! { crate::config::validate_alias_key(map_key).map_err(|e| e)?; }
+                    };
                     create_map_key_arms.push(quote! {
                         {
                             let prefix = Self::configurable_prefix();
@@ -982,8 +989,7 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                                 format!("{prefix}.{}", #field_name_lit)
                             };
                             if section_path == expected {
-                                crate::config::validate_alias_key(map_key)
-                                    .map_err(|e| e)?;
+                                #validate_create
                                 if self.#field_ident.contains_key(map_key) {
                                     return Ok(false);
                                 }
@@ -1025,6 +1031,11 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                     });
 
                     // rename_map_key for single-level HashMap.
+                    let validate_rename = if is_resource_key {
+                        quote! {}
+                    } else {
+                        quote! { crate::config::validate_alias_key(new_key).map_err(|e| e)?; }
+                    };
                     rename_map_key_arms.push(quote! {
                         {
                             let prefix = Self::configurable_prefix();
@@ -1034,8 +1045,7 @@ pub fn derive_configurable(input: TokenStream) -> TokenStream {
                                 format!("{prefix}.{}", #field_name_lit)
                             };
                             if section_path == expected {
-                                crate::config::validate_alias_key(new_key)
-                                    .map_err(|e| e)?;
+                                #validate_rename
                                 if self.#field_ident.contains_key(new_key) {
                                     return Err(format!("alias `{new_key}` already exists"));
                                 }

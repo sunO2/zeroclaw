@@ -4841,6 +4841,8 @@ pub struct CostRatesConfig {
     /// `[cost.rates.tools.<name>]` — per-call rates for tools that
     /// hit paid APIs. Keyed by the tool's registered name.
     #[serde(default)]
+    #[nested]
+    #[resource_key]
     pub tools: std::collections::HashMap<String, ToolCostRates>,
 }
 
@@ -14747,10 +14749,17 @@ fn apply_dirty_path(
     full_table: &toml::Table,
     default_table: &toml::Table,
 ) {
-    let segments: Vec<String> = dotted.split('.').map(|s| s.replace('-', "_")).collect();
-    if segments.is_empty() {
+    let raw: Vec<&str> = dotted.split('.').collect();
+    if raw.is_empty() {
         return;
     }
+    // Resolve each segment against the in-memory table: struct fields
+    // serialize as snake_case (so `input-per-mtok` → `input_per_mtok`), but
+    // HashMap keys are preserved verbatim and may legitimately carry hyphens
+    // (`claude-opus-4-7`, `tts-1-hd`). Blind `s.replace('-', "_")` mangles
+    // those keys and lookup returns None, which apply_dirty_path treats as
+    // "delete this path" — silently dropping every cost.rates save.
+    let segments: Vec<String> = resolve_dirty_segments(full_table, &raw);
     let segs: Vec<&str> = segments.iter().map(String::as_str).collect();
 
     let mem_val = lookup_path_in_table(full_table, &segs);
@@ -14803,6 +14812,33 @@ fn prune_empty_leaves(value: &mut toml::Value) {
         }
         _ => {}
     }
+}
+
+fn resolve_dirty_segments(root: &toml::Table, raw: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut current: Option<&toml::Value> = None;
+    for seg in raw {
+        let table_opt: Option<&toml::Table> = if out.is_empty() {
+            Some(root)
+        } else {
+            current.and_then(|v| v.as_table())
+        };
+        let resolved = match table_opt {
+            Some(t) if t.contains_key(*seg) => (*seg).to_string(),
+            Some(t) => {
+                let snake = seg.replace('-', "_");
+                if t.contains_key(&snake) {
+                    snake
+                } else {
+                    (*seg).to_string()
+                }
+            }
+            None => (*seg).to_string(),
+        };
+        current = table_opt.and_then(|t| t.get(&resolved));
+        out.push(resolved);
+    }
+    out
 }
 
 fn lookup_path_in_table<'a>(root: &'a toml::Table, segs: &[&str]) -> Option<&'a toml::Value> {
