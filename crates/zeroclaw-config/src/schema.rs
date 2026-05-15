@@ -345,6 +345,17 @@ pub struct Config {
     #[nested]
     pub cost: CostConfig,
 
+    /// Per-provider, per-model token cost rates (`[costs.providers.models.<type>.<model>]`).
+    /// Operator-managed rate sheet that drives the CostTracker. Rates
+    /// are per (provider type, model) — not per provider alias, since
+    /// the same vendor charges the same regardless of which configured
+    /// alias holds the API key. Legacy `[model_providers.<type>.<alias>].pricing`
+    /// is still read as a fallback; entries in this section win on
+    /// conflict.
+    #[serde(default)]
+    #[nested]
+    pub costs: CostsConfig,
+
     /// Peripheral board configuration for hardware integration (`[peripherals]`).
     #[serde(default)]
     #[nested]
@@ -4797,6 +4808,56 @@ fn default_cost_enabled() -> bool {
 
 fn default_track_per_agent() -> bool {
     true
+}
+
+/// Top-level token-cost rate sheet (`[costs]` section).
+///
+/// Currently just a wrapper around the per-provider per-model rate map.
+/// Kept as its own struct so future cost-related top-level knobs
+/// (currency, rounding policy, override hooks) have a place to live
+/// without re-nesting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "costs"]
+pub struct CostsConfig {
+    /// `[costs.providers]` namespace.
+    #[serde(default)]
+    #[nested]
+    pub providers: CostsProvidersConfig,
+}
+
+/// `[costs.providers]` — currently only `.models`. The split mirrors
+/// `[providers.models]` / `[providers.tts]` so future provider-shaped
+/// cost surfaces (e.g. transcription, embedding) have a parallel home.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "costs.providers"]
+pub struct CostsProvidersConfig {
+    /// `[costs.providers.models.<type>.<model>]` — per (provider type,
+    /// model) token rates. Outer key = provider type (`"anthropic"`,
+    /// `"openai"`, …); inner key = model identifier as the provider
+    /// reports it (`"claude-opus-4-7"`, `"gpt-4o-2024-08-06"`, …).
+    #[serde(default)]
+    pub models: std::collections::HashMap<String, std::collections::HashMap<String, ModelCostRates>>,
+}
+
+/// Token-cost rates for a single (provider type, model) pair, in USD
+/// per 1M tokens. Every field is optional so partial sheets (e.g.
+/// input-only for embedding-style providers) work without ceremony.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Configurable)]
+#[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "costs.providers.models"]
+pub struct ModelCostRates {
+    /// Input tokens (USD per 1M).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_per_mtok: Option<f64>,
+    /// Output tokens (USD per 1M).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_per_mtok: Option<f64>,
+    /// Cached input tokens (USD per 1M). Optional — leave unset on
+    /// providers that don't charge separately for prompt cache hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_per_mtok: Option<f64>,
 }
 
 impl Default for CostConfig {
@@ -12488,6 +12549,7 @@ impl Default for Config {
             google_workspace: GoogleWorkspaceConfig::default(),
             proxy: ProxyConfig::default(),
             cost: CostConfig::default(),
+            costs: CostsConfig::default(),
             peripherals: PeripheralsConfig::default(),
             delegate: DelegateToolConfig::default(),
             agents: HashMap::new(),
@@ -15571,6 +15633,7 @@ auto_save = true
             proxy: ProxyConfig::default(),
             pacing: PacingConfig::default(),
             cost: CostConfig::default(),
+            costs: CostsConfig::default(),
             peripherals: PeripheralsConfig::default(),
             delegate: DelegateToolConfig::default(),
             agents: HashMap::new(),
@@ -16159,6 +16222,7 @@ default_temperature = 0.7
             proxy: ProxyConfig::default(),
             pacing: PacingConfig::default(),
             cost: CostConfig::default(),
+            costs: CostsConfig::default(),
             peripherals: PeripheralsConfig::default(),
             delegate: DelegateToolConfig::default(),
             agents: HashMap::new(),

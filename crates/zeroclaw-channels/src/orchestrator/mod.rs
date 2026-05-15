@@ -6658,18 +6658,49 @@ pub async fn start_channels(
                 &config.data_dir,
             )
             .map(|tracker| {
-                let pricing: zeroclaw_runtime::agent::cost::ModelProviderPricing = config
-                    .providers
-                    .models
-                    .iter_entries()
-                    .map(|(type_k, alias_k, profile)| {
-                        (format!("{type_k}.{alias_k}"), profile.pricing.clone())
-                    })
-                    .filter(|(_, p)| !p.is_empty())
-                    .collect();
+                // The cost tracker's lookup site (`record_tool_loop_cost_usage`
+                // in zeroclaw-runtime) receives the bare provider type — the
+                // composite alias isn't threaded through the agent loop. Build
+                // the pricing map keyed by `<type>` and merge each alias's
+                // `pricing` table into the type-level slot. Rates are per
+                // (provider type, model); they don't differ between an
+                // operator's `anthropic.work` and `anthropic.personal` keys.
+                let mut by_type: std::collections::HashMap<
+                    String,
+                    std::collections::HashMap<String, f64>,
+                > = std::collections::HashMap::new();
+                for (type_k, _alias_k, profile) in config.providers.models.iter_entries() {
+                    if profile.pricing.is_empty() {
+                        continue;
+                    }
+                    let slot = by_type.entry(type_k.to_string()).or_default();
+                    for (key, value) in &profile.pricing {
+                        slot.insert(key.clone(), *value);
+                    }
+                }
+                // Merge the new top-level `[costs.providers.models.<type>.<model>]`
+                // section. Keys land as `"<model>.input"` / `"<model>.output"`
+                // so the existing lookup (`resolve_rates`) finds them with no
+                // further changes. The new section wins on conflict — it's the
+                // forward-looking surface, the legacy `pricing` table is the
+                // fallback for installs that haven't migrated.
+                for (type_k, models) in &config.costs.providers.models {
+                    let slot = by_type.entry(type_k.clone()).or_default();
+                    for (model_k, rates) in models {
+                        if let Some(input) = rates.input_per_mtok {
+                            slot.insert(format!("{model_k}.input"), input);
+                        }
+                        if let Some(output) = rates.output_per_mtok {
+                            slot.insert(format!("{model_k}.output"), output);
+                        }
+                        if let Some(cached) = rates.cached_input_per_mtok {
+                            slot.insert(format!("{model_k}.cached_input"), cached);
+                        }
+                    }
+                }
                 ChannelCostTrackingState {
                     tracker,
-                    model_provider_pricing: Arc::new(pricing),
+                    model_provider_pricing: Arc::new(by_type),
                     agent_alias: Arc::new(agent_alias.clone()),
                 }
             }),
