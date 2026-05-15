@@ -124,6 +124,12 @@ interface FieldFormProps {
    *  rendering, so saves still validate against the full server-side
    *  config. */
   includePath?: (path: string) => boolean;
+  /** Render the save bar as a normal inline element instead of
+   *  `sticky bottom-0`. Set when the FieldForm is embedded inside a
+   *  taller composite editor (e.g. an expandable rate-sheet row) where
+   *  the sticky viewport-bottom behavior would conflict with sibling
+   *  content rendered below the form. */
+  inlineSaveBar?: boolean;
 }
 
 /** Imperative handle the parent uses to flush unsaved changes before
@@ -388,7 +394,7 @@ function agentAliasJumpPath(
 }
 
 const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm(
-  { prefix, onSaved, showDelete = true, title, drift, includePath },
+  { prefix, onSaved, showDelete = true, title, drift, includePath, inlineSaveBar = false },
   ref,
 ) {
   const configDraft = useConfigDraft();
@@ -646,11 +652,19 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
   }
 
   return (
-    <div className="flex flex-col gap-4 pb-20 flex-1 min-h-full">
+    <div
+      className={
+        inlineSaveBar
+          ? 'flex flex-col'
+          : 'flex flex-col gap-4 pb-20 flex-1 min-h-full'
+      }
+    >
       {/* flex-1 + min-h-full stretches the form to fill the scroll area so
           the sticky save bar anchors to the viewport bottom even with a
           short field list. pb-20 reserves room so the last field isn't
-          covered. */}
+          covered. inlineSaveBar drops both — the save bar is rendered
+          tight against the last field as a footer of the embedding
+          card. */}
       {(title || enabledEntry) && (
         <div className="flex items-center justify-between gap-3 flex-wrap">
           {title ? (
@@ -779,10 +793,16 @@ const FieldForm = forwardRef<FieldFormHandle, FieldFormProps>(function FieldForm
           button so post-save feedback lands where the eye already is. */}
       {entries.length > 0 && (
         <div
-          className="sticky bottom-0 left-0 right-0 -mx-6 px-6 py-3 border-t backdrop-blur z-10"
+          className={
+            inlineSaveBar
+              ? 'px-3 py-2 mt-2 rounded-md'
+              : 'sticky bottom-0 left-0 right-0 -mx-6 px-6 py-3 border-t backdrop-blur z-10'
+          }
           style={{
             borderColor: 'var(--pc-border)',
-            background: 'color-mix(in srgb, var(--pc-bg-base) 88%, transparent)',
+            background: inlineSaveBar
+              ? 'var(--pc-bg-elevated)'
+              : 'color-mix(in srgb, var(--pc-bg-base) 88%, transparent)',
           }}
         >
           <div className="flex items-center justify-between gap-3">

@@ -335,16 +335,33 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
         roots.remove(*hidden);
     }
 
-    // Map-keyed roots get pickers automatically (the picker shows existing
-    // keys / catalog entries; selecting an item opens its form).
-    let map_keyed_roots: std::collections::HashSet<&'static str> =
-        zeroclaw_config::schema::Config::map_key_sections()
-            .iter()
-            .filter_map(|s| s.path.split('.').next())
-            .collect();
+    // A section gets a picker only when its OWN root carries a map (path
+    // == key) or its immediate child is a typed-family map (path == key
+    // + "." + one segment). Deeper nested maps belong to a subsection's
+    // own editor and must not promote their top-level section to a
+    // picker — `cost.rates.providers.models.<type>` is the rate-sheet's
+    // concern, not a reason to give `[cost]` an Add affordance.
+    let all_map_paths: Vec<&'static str> = zeroclaw_config::schema::Config::map_key_sections()
+        .iter()
+        .map(|s| s.path)
+        .collect();
+    let section_has_picker_for_key = |key: &str| -> bool {
+        let key_dot = format!("{key}.");
+        all_map_paths.iter().any(|p| {
+            *p == key
+                || p.strip_prefix(&key_dot)
+                    .is_some_and(|rest| !rest.contains('.'))
+        })
+    };
 
-    // Ensure map-keyed sections surface even when their HashMap is empty
-    // (prop_fields() only yields paths for populated entries).
+    // Ensure map-keyed sections surface as sidebar entries even when their
+    // HashMap is empty (prop_fields() only yields paths for populated
+    // entries). First segments only — the prefix-dedup pass below drops
+    // bare parent segments when a multi-segment child is present.
+    let map_keyed_roots: std::collections::HashSet<&'static str> = all_map_paths
+        .iter()
+        .filter_map(|p| p.split('.').next())
+        .collect();
     for &prefix in &map_keyed_roots {
         roots.insert(prefix.to_string());
     }
@@ -364,6 +381,14 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
         .filter_map(|k| k.split_once('.').map(|(parent, _)| parent.to_string()))
         .collect();
     roots.retain(|k| k.contains('.') || !prefixes_with_children.contains(k));
+
+    // Hard-ban the rate-sheet subtree from the sidebar. `[cost.rates.*]` is
+    // edited from inside the `[cost]` section's tabs (and from each
+    // provider-type page's Costs tab); it has no standalone picker, no
+    // direct form at any intermediate depth, and surfacing a path like
+    // `cost.rates.providers.tts` as its own sidebar entry only yields a
+    // dead-end "no picker" page.
+    roots.retain(|k| !k.starts_with("cost.rates"));
 
     // Sort: onboarding-wizard sections first in their canonical order
     // (single source of truth in `zeroclaw_config::sections`), then
@@ -399,7 +424,7 @@ pub async fn handle_sections(State(state): State<AppState>, headers: HeaderMap) 
                         | zeroclaw_config::sections::Section::Mcp
                         | zeroclaw_config::sections::Section::Skills
                 ),
-                None => map_keyed_roots.contains(key.as_str()),
+                None => section_has_picker_for_key(&key),
             };
             SectionInfo {
                 completed: completed.contains(&key),

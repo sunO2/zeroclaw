@@ -21,6 +21,7 @@ import {
   getDrift,
   getMapKeys,
   getSections,
+  getTemplates,
   listProps,
   patchConfig,
   selectSectionItem,
@@ -34,6 +35,9 @@ import SkillsBundleEditor from '../components/onboard/SkillsBundleEditor';
 import ReloadDaemonButton from '../components/onboard/ReloadDaemonButton';
 import SectionPicker from '../components/onboard/SectionPicker';
 import SectionTabs, { type SectionTabSpec } from '../components/onboard/SectionTabs';
+import CostRatesEditor, {
+  type CostRatesCategory,
+} from '../components/onboard/CostRatesEditor';
 
 // Display order for the curated sidebar groups. Each `SectionInfo.group`
 // from the gateway lands in one of these buckets (anything else falls
@@ -345,7 +349,7 @@ export default function Config() {
 
     // /config/:section/:type — alias list (providers/channels) or direct form
     if (typeParam && needsAliasTier) {
-      return (
+      const aliasListPane = (
         <AliasListView
           sectionKey={activeSection.key}
           typeKey={typeParam}
@@ -359,6 +363,28 @@ export default function Config() {
           onBack={() => navigate(`/config/${encodeURIComponent(activeSection.key)}`)}
         />
       );
+      const costsCategory = costCategoryForSection(activeSection.key);
+      if (costsCategory) {
+        return (
+          <SectionTabs
+            tabs={[
+              { key: 'aliases', label: 'Aliases', render: () => aliasListPane },
+              {
+                key: 'costs',
+                label: 'Costs',
+                render: () => (
+                  <CostRatesEditor
+                    category={costsCategory}
+                    providerType={typeParam}
+                    onSaved={fetchDrift}
+                  />
+                ),
+              },
+            ]}
+          />
+        );
+      }
+      return aliasListPane;
     }
 
     // /config/:section — section overview (configured items) + picker
@@ -801,6 +827,134 @@ function sectionTabsForDirectForm(
       },
     ];
   }
+  if (sectionKey === 'cost') {
+    return [
+      {
+        key: 'limits',
+        label: 'Limits',
+        render: () => makeForm((p) => !p.startsWith('cost.rates.')),
+      },
+      {
+        key: 'rates',
+        label: 'Rates',
+        render: () => <CostRatesStandalone onSaved={ctx.onSaved} />,
+      },
+    ];
+  }
+  return null;
+}
+
+// Standalone rate-sheet editor for `/config/cost` → Rates tab. Picks
+// category + provider type, then defers to CostRatesEditor for the
+// resource list / row editor (which is the same widget embedded on the
+// provider alias's own Costs tab).
+//
+// Provider-type options come straight from the schema via
+// `GET /api/config/templates` — every `cost.rates.providers.<category>.<type>`
+// map section the Configurable derive enumerates is one option. No
+// hand-typed slot table on the frontend; adding a provider slot in
+// `for_each_*_provider_slot!` is the single source of truth.
+function CostRatesStandalone({ onSaved }: { onSaved?: () => void }) {
+  const [category, setCategory] = useState<CostRatesCategory>('models');
+  const [providerType, setProviderType] = useState<string>('');
+  const [providerTypeOptions, setProviderTypeOptions] = useState<
+    Record<CostRatesCategory, string[]>
+  >({ models: [], tts: [], transcription: [] });
+  const [loadingTemplates, setLoadingTemplates] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getTemplates()
+      .then((r) => {
+        if (cancelled) return;
+        const byCat: Record<CostRatesCategory, string[]> = {
+          models: [],
+          tts: [],
+          transcription: [],
+        };
+        for (const t of r.templates) {
+          if (t.kind !== 'map') continue;
+          const parts = t.path.split('.');
+          if (parts.length !== 5) continue;
+          if (parts[0] !== 'cost' || parts[1] !== 'rates' || parts[2] !== 'providers') continue;
+          const cat = parts[3];
+          if (cat !== 'models' && cat !== 'tts' && cat !== 'transcription') continue;
+          const type = parts[4];
+          if (type) byCat[cat].push(type);
+        }
+        for (const k of Object.keys(byCat) as CostRatesCategory[]) {
+          byCat[k].sort();
+        }
+        setProviderTypeOptions(byCat);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTemplates(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const options = providerTypeOptions[category];
+  useEffect(() => {
+    if (options.length === 0) return;
+    const first = options[0];
+    if (first && !options.includes(providerType)) setProviderType(first);
+  }, [category, options, providerType]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <label className="text-sm flex items-center gap-2">
+          <span style={{ color: 'var(--pc-text-secondary)' }}>Category</span>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value as CostRatesCategory)}
+            className="input-electric text-sm px-2 py-1 appearance-none cursor-pointer"
+          >
+            <option value="models">models (USD per 1M tokens)</option>
+            <option value="tts">tts (USD per 1M chars)</option>
+            <option value="transcription">transcription (USD per minute)</option>
+          </select>
+        </label>
+        <label className="text-sm flex items-center gap-2">
+          <span style={{ color: 'var(--pc-text-secondary)' }}>Provider</span>
+          <select
+            value={providerType}
+            onChange={(e) => setProviderType(e.target.value)}
+            disabled={loadingTemplates || options.length === 0}
+            className="input-electric text-sm px-2 py-1 appearance-none cursor-pointer"
+          >
+            {options.length === 0 ? (
+              <option value="">
+                {loadingTemplates ? 'loading…' : 'no providers'}
+              </option>
+            ) : (
+              options.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+      </div>
+
+      {providerType && (
+        <CostRatesEditor
+          category={category}
+          providerType={providerType}
+          onSaved={onSaved}
+        />
+      )}
+    </div>
+  );
+}
+
+function costCategoryForSection(sectionKey: string): CostRatesCategory | null {
+  if (sectionKey === 'providers.models') return 'models';
+  if (sectionKey === 'providers.tts') return 'tts';
+  if (sectionKey === 'providers.transcription') return 'transcription';
   return null;
 }
 
