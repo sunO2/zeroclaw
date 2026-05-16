@@ -52,9 +52,7 @@ impl SkillManageTool {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(
-                    "Skill improvement is disabled (enabled: false)".to_string(),
-                ),
+                error: Some("Skill improvement is disabled (enabled: false)".to_string()),
             });
         }
 
@@ -68,9 +66,7 @@ impl SkillManageTool {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!(
-                    "Skill '{slug}' is in cooldown; try again later"
-                )),
+                error: Some(format!("Skill '{slug}' is in cooldown; try again later")),
             });
         }
 
@@ -197,7 +193,9 @@ mod tests {
         // Insert a cooldown entry.
         {
             let mut improver = tool.improver.lock().await;
-            improver.cooldowns.insert("my-skill".to_string(), Instant::now());
+            improver
+                .cooldowns
+                .insert("my-skill".to_string(), Instant::now());
         }
 
         let args = json!({
