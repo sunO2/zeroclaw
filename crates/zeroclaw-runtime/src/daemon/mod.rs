@@ -266,9 +266,25 @@ pub async fn run(
         tracing::info!("Cron disabled; scheduler supervisor not started");
     }
 
+    if config.dream_mode.enabled {
+        let dream_cfg = config.clone();
+        handles.push(spawn_component_supervisor(
+            "dream",
+            initial_backoff,
+            max_backoff,
+            move || {
+                let cfg = dream_cfg.clone();
+                async move { Box::pin(run_dream_worker(cfg)).await }
+            },
+        ));
+    } else {
+        crate::health::mark_component_ok("dream");
+        tracing::info!("Dream mode disabled; dream supervisor not started");
+    }
+
     println!("🧠 ZeroClaw daemon started");
     println!("   Gateway:  http://{host}:{port}");
-    println!("   Components: gateway, channels, heartbeat, scheduler");
+    println!("   Components: gateway, channels, heartbeat, scheduler, dream");
     if config.gateway.require_pairing {
         println!("   Pairing:    enabled (code appears in gateway output above)");
     }
@@ -751,6 +767,112 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
             );
         } else {
             sleep_mins = base_interval;
+        }
+    }
+}
+
+/// Dream mode worker — runs periodic memory consolidation cycles.
+///
+/// Parses the cron schedule from `dream_mode.schedule`, sleeps until the next
+/// trigger time, and runs a dream cycle. Falls back to the idle timeout if the
+/// cron expression is invalid.
+async fn run_dream_worker(config: Config) -> Result<()> {
+    use crate::dream::engine::DreamEngine;
+    use anyhow::Context;
+    use std::str::FromStr;
+
+    if !config.dream_mode.enabled {
+        tracing::info!("Dream mode disabled");
+        return Ok(());
+    }
+
+    let engine = DreamEngine::new(config.dream_mode.clone(), config.workspace_dir.clone());
+
+    // Resolve the provider and model for LLM reflection calls.
+    let fallback = config
+        .providers
+        .fallback_provider()
+        .context("dream worker: no fallback provider configured")?;
+    let provider_name = config.providers.fallback.as_deref().unwrap_or("anthropic");
+    let provider = zeroclaw_providers::create_provider(provider_name, fallback.api_key.as_deref())?;
+    let model = config
+        .dream_mode
+        .model
+        .as_deref()
+        .or(fallback.model.as_deref())
+        .unwrap_or("claude-haiku-4-5-20251001");
+
+    // Parse the cron schedule for cycle timing.
+    let schedule = cron::Schedule::from_str(&config.dream_mode.schedule).ok();
+    if schedule.is_none() {
+        tracing::warn!(
+            "Dream mode: invalid cron expression '{}', using idle timeout only",
+            config.dream_mode.schedule
+        );
+    }
+
+    crate::health::mark_component_ok("dream");
+    tracing::info!(
+        "Dream mode started: schedule='{}', idle_timeout={}min",
+        config.dream_mode.schedule,
+        config.dream_mode.idle_timeout_minutes
+    );
+
+    loop {
+        // Compute next wake time from cron schedule.
+        let sleep_duration = if let Some(ref sched) = schedule {
+            sched
+                .upcoming(chrono::Utc)
+                .next()
+                .map(|t| {
+                    (t - chrono::Utc::now())
+                        .to_std()
+                        .unwrap_or(Duration::from_secs(60))
+                })
+                .unwrap_or(Duration::from_secs(3600))
+        } else {
+            // Fallback: use idle timeout as the cycle interval.
+            Duration::from_secs(u64::from(config.dream_mode.idle_timeout_minutes.max(1)) * 60)
+        };
+
+        tracing::debug!(
+            "Dream mode: sleeping for {}s until next cycle",
+            sleep_duration.as_secs()
+        );
+        tokio::time::sleep(sleep_duration).await;
+
+        // Create memory backend for this cycle.
+        let memory: Option<Box<dyn zeroclaw_memory::Memory>> = zeroclaw_memory::create_memory(
+            &config.memory,
+            &config.workspace_dir,
+            config
+                .providers
+                .fallback_provider()
+                .and_then(|e| e.api_key.as_deref()),
+        )
+        .ok();
+
+        let Some(ref mem) = memory else {
+            tracing::warn!("Dream mode: memory backend unavailable, skipping cycle");
+            continue;
+        };
+
+        match engine
+            .run_cycle(mem.as_ref(), provider.as_ref(), model)
+            .await
+        {
+            Ok(result) => {
+                crate::health::mark_component_ok("dream");
+                tracing::info!(
+                    "Dream cycle complete: {} insights, {} pruned",
+                    result.consolidated_count,
+                    result.pruned_count
+                );
+            }
+            Err(e) => {
+                crate::health::mark_component_error("dream", e.to_string());
+                tracing::error!("Dream cycle failed: {e}");
+            }
         }
     }
 }

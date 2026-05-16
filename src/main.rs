@@ -152,6 +152,8 @@ mod cron;
 mod daemon;
 #[cfg(feature = "agent-runtime")]
 mod doctor;
+#[cfg(feature = "agent-runtime")]
+mod dream;
 #[cfg(feature = "gateway")]
 mod gateway;
 #[cfg(feature = "agent-runtime")]
@@ -605,6 +607,32 @@ Examples:
     Memory {
         #[command(subcommand)]
         memory_command: MemoryCommands,
+    },
+
+    /// Run a dream cycle (periodic memory consolidation)
+    #[command(long_about = "\
+Trigger a dream cycle — periodic memory consolidation and reflective learning.
+
+Dream mode gathers recent memories, uses an LLM to identify patterns and \
+insights, consolidates them into long-term Core memories, and prunes stale \
+entries. Use --dry-run to preview changes without persisting.
+
+Examples:
+  zeroclaw dream                    # run a dream cycle
+  zeroclaw dream --dry-run          # preview without persisting
+  zeroclaw dream --verbose          # show detailed output
+  zeroclaw dream report             # show pending dream report")]
+    Dream {
+        #[command(subcommand)]
+        dream_command: Option<DreamCommands>,
+
+        /// Preview changes without persisting to memory
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Show verbose output for each phase
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// Manage configuration
@@ -1149,6 +1177,13 @@ enum MemoryCommands {
     /// rows with `embedding = NULL`. Safe to re-run; only touches entries
     /// whose vector is missing. No-op for backends without a vector index.
     Reindex,
+}
+
+/// Dream mode subcommands.
+#[derive(Subcommand, Debug, Clone)]
+enum DreamCommands {
+    /// Show the pending dream report (marks as delivered)
+    Report,
 }
 
 fn apply_i18n_to_command(cmd: clap::Command) -> clap::Command {
@@ -2105,6 +2140,15 @@ async fn main() -> Result<()> {
         Commands::Memory { memory_command } => {
             memory::cli::handle_command(memory_command, &config).await
         }
+
+        Commands::Dream {
+            dream_command,
+            dry_run,
+            verbose,
+        } => match dream_command {
+            Some(DreamCommands::Report) => dream::show_report(&config),
+            None => dream::run_dream(&config, dry_run, verbose).await,
+        },
 
         Commands::Auth { auth_command } => handle_auth_command(auth_command, &config).await,
 
