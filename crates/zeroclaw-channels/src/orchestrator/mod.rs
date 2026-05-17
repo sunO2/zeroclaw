@@ -2791,7 +2791,16 @@ async fn process_channel_message_body(
 ) {
     ::zeroclaw_log::record!(
         INFO,
-        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Inbound),
+        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Inbound).with_attrs(
+            ::serde_json::json!({
+                "sender": msg.sender,
+                "message_id": msg.id,
+                "reply_target": msg.reply_target,
+                "thread_ts": msg.thread_ts,
+                "content": msg.content,
+                "attachments_count": msg.attachments.len(),
+            })
+        ),
         "channel inbound message"
     );
 
@@ -3834,7 +3843,22 @@ async fn process_channel_message_body(
                 });
             }
 
-            ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"elapsed_ms": started_at.elapsed().as_millis() as u64, "response": delivered_response})), "reply delivered");
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Outbound)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Success)
+                    .with_duration(
+                        u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                    .with_attrs(::serde_json::json!({
+                        "sender": msg.sender,
+                        "message_id": msg.id,
+                        "reply_target": msg.reply_target,
+                        "thread_ts": msg.thread_ts,
+                        "content": delivered_response,
+                    })),
+                "reply delivered"
+            );
             // Build the trailing `Tool receipts:` block from the per-turn
             // collector. Empty when receipts are disabled or no tool ran.
             // Includes receipts from delegate sub-agents because the same
