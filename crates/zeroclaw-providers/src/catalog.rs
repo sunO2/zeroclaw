@@ -87,12 +87,11 @@ pub async fn list_models_for_family(family: &str) -> Result<Vec<String>> {
     let Some((md_key, or_prefix)) = catalog_source_for(family) else {
         anyhow::bail!("unknown provider family {family:?}");
     };
-    if let Some(k) = md_key {
-        if let Ok(ms) = crate::models_dev::list_models_for(k).await {
-            if !ms.is_empty() {
-                return Ok(ms);
-            }
-        }
+    if let Some(k) = md_key
+        && let Ok(ms) = crate::models_dev::list_models_for(k).await
+        && !ms.is_empty()
+    {
+        return Ok(ms);
     }
     if let Some(p) = or_prefix {
         return crate::openrouter_catalog::list_models_for_vendor(p).await;

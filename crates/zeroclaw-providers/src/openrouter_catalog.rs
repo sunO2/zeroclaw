@@ -56,9 +56,7 @@ pub(crate) fn filter_by_vendor(catalog: &[String], vendor_prefix: &str) -> Resul
         .filter_map(|id| id.strip_prefix(&needle).map(ToString::to_string))
         .collect();
     if slugs.is_empty() {
-        anyhow::bail!(
-            "OpenRouter catalog has no entries under vendor prefix {vendor_prefix:?}"
-        );
+        anyhow::bail!("OpenRouter catalog has no entries under vendor prefix {vendor_prefix:?}");
     }
     slugs.sort();
     slugs.dedup();
