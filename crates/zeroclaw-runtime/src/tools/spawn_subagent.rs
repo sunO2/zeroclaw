@@ -384,4 +384,33 @@ mod tests {
             "AgentRunOverrides::default().is_subagent must be false so cron paths inherit a top-level shape"
         );
     }
+
+    // ── Tool : Attributable contract ──────────────────────────
+    //
+    // Every Tool impl carries a structured role + alias the same way
+    // channels do, so log emissions, audit traces, and ops banners can
+    // tag tool activity with the same `<kind>.<alias>` composite shape
+    // they use for the rest of the runtime. The trait supertrait is
+    // the load-bearing piece: a `&dyn Tool` must coerce to a
+    // `&dyn Attributable` automatically. Without `Tool: Attributable`
+    // the line below does not compile.
+
+    #[test]
+    fn spawn_subagent_dyn_tool_implements_attributable() {
+        use zeroclaw_api::attribution::{Attributable, Role, ToolKind};
+
+        let tool: Box<dyn Tool> = Box::new(SpawnSubagentTool::new(
+            Arc::new(config_with_agent("alpha")),
+            "alpha",
+        ));
+        assert_eq!(
+            Attributable::role(tool.as_ref()),
+            Role::Tool(ToolKind::SpawnSubagent),
+            "SpawnSubagentTool must surface its kind through the Tool trait object"
+        );
+        assert!(
+            !Attributable::alias(tool.as_ref()).is_empty(),
+            "Attributable::alias on a Tool must be non-empty so composite keys never produce `.<bare>`"
+        );
+    }
 }
