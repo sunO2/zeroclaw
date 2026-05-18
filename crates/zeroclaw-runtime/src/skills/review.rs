@@ -87,11 +87,11 @@ pub async fn maybe_run_skill_review(
                 observer,
                 provider_name,
                 model_name,
-                0.3, // temperature — low so the fork doesn't ramble
-                true, // silent
-                None, // approval: no human in the loop here
+                0.3,            // temperature — low so the fork doesn't ramble
+                true,           // silent
+                None,           // approval: no human in the loop here
                 "skill_review", // channel_name
-                None, // channel_reply_target
+                None,           // channel_reply_target
                 multimodal,
                 config.max_review_iterations as usize,
                 None, // cancellation_token
@@ -170,11 +170,7 @@ fn summarize_actions(receipts: &Mutex<Vec<String>>, final_text: &str) -> String 
     let receipts = receipts.lock().ok();
     let actions: Vec<String> = receipts
         .as_ref()
-        .map(|v| {
-            v.iter()
-                .filter_map(|r| extract_action_summary(r))
-                .collect()
-        })
+        .map(|v| v.iter().filter_map(|r| extract_action_summary(r)).collect())
         .unwrap_or_default();
 
     if !actions.is_empty() {

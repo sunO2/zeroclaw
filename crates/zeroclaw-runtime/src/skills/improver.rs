@@ -474,10 +474,10 @@ mod tests {
         let skill_dir = dir.path().join("skills").join("test-skill");
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
         let recent = chrono::Utc::now().to_rfc3339();
-        let md = format!(
-            "---\nname: test-skill\nupdated_at: \"{recent}\"\n---\n\nBody\n"
-        );
-        tokio::fs::write(skill_dir.join("SKILL.md"), md).await.unwrap();
+        let md = format!("---\nname: test-skill\nupdated_at: \"{recent}\"\n---\n\nBody\n");
+        tokio::fs::write(skill_dir.join("SKILL.md"), md)
+            .await
+            .unwrap();
 
         let improver = SkillImprover::new(dir.path().to_path_buf(), cfg(true, 9999));
         assert!(!improver.should_improve_skill("test-skill"));
@@ -489,10 +489,10 @@ mod tests {
         let skill_dir = dir.path().join("skills").join("test-skill");
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
         let stale = (chrono::Utc::now() - chrono::Duration::seconds(10_000)).to_rfc3339();
-        let md = format!(
-            "---\nname: test-skill\nupdated_at: \"{stale}\"\n---\n\nBody\n"
-        );
-        tokio::fs::write(skill_dir.join("SKILL.md"), md).await.unwrap();
+        let md = format!("---\nname: test-skill\nupdated_at: \"{stale}\"\n---\n\nBody\n");
+        tokio::fs::write(skill_dir.join("SKILL.md"), md)
+            .await
+            .unwrap();
 
         let improver = SkillImprover::new(dir.path().to_path_buf(), cfg(true, 3600));
         assert!(improver.should_improve_skill("test-skill"));
@@ -507,7 +507,9 @@ mod tests {
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
 
         let original = "---\nname: test-skill\ndescription: Original description\nversion: \"0.1.0\"\n---\n\n# Test skill\nLine 1 of body.\nLine 2 of body.\n";
-        tokio::fs::write(skill_dir.join("SKILL.md"), original).await.unwrap();
+        tokio::fs::write(skill_dir.join("SKILL.md"), original)
+            .await
+            .unwrap();
 
         let mut improver = SkillImprover::new(dir.path().to_path_buf(), cfg(true, 0));
 
@@ -537,7 +539,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("skills").join("test-skill");
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
-        tokio::fs::write(skill_dir.join("SKILL.md"), VALID_SKILL).await.unwrap();
+        tokio::fs::write(skill_dir.join("SKILL.md"), VALID_SKILL)
+            .await
+            .unwrap();
 
         let mut improver = SkillImprover::new(dir.path().to_path_buf(), cfg(true, 0));
 
@@ -561,7 +565,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("skills").join("test-skill");
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
-        tokio::fs::write(skill_dir.join("SKILL.md"), VALID_SKILL).await.unwrap();
+        tokio::fs::write(skill_dir.join("SKILL.md"), VALID_SKILL)
+            .await
+            .unwrap();
 
         let mut improver = SkillImprover::new(dir.path().to_path_buf(), cfg(true, 9999));
         improver
@@ -583,7 +589,8 @@ mod tests {
 
     #[test]
     fn append_metadata_adds_fields() {
-        let result = append_improvement_metadata(VALID_SKILL, "2026-01-01T00:00:00Z", "Better steps");
+        let result =
+            append_improvement_metadata(VALID_SKILL, "2026-01-01T00:00:00Z", "Better steps");
         assert!(result.contains("updated_at: \"2026-01-01T00:00:00Z\""));
         assert!(result.contains("improvement_reason: \"Better steps\""));
     }
@@ -601,7 +608,8 @@ mod tests {
         // A previously-improved skill carries both keys. Appending again must
         // strip both before emitting new values so YAML stays valid.
         let already_improved = "---\nname: test\nupdated_at: \"2025-12-01T00:00:00Z\"\nimprovement_reason: \"first pass\"\n---\n\nBody\n";
-        let result = append_improvement_metadata(already_improved, "2026-01-01T00:00:00Z", "second pass");
+        let result =
+            append_improvement_metadata(already_improved, "2026-01-01T00:00:00Z", "second pass");
         let front = result.split("\n---\n").next().unwrap_or("");
         assert_eq!(front.matches("updated_at:").count(), 1);
         assert_eq!(front.matches("improvement_reason:").count(), 1);
@@ -697,9 +705,7 @@ mod tests {
     fn extract_executions_native_format() {
         let history = vec![
             ChatMessage::user("run it"),
-            ChatMessage::assistant(
-                "{\"tool_calls\": [{\"name\": \"deploy.run\", \"args\": {}}]}",
-            ),
+            ChatMessage::assistant("{\"tool_calls\": [{\"name\": \"deploy.run\", \"args\": {}}]}"),
             ChatMessage {
                 role: "tool".into(),
                 content: "Error: connection refused".into(),
