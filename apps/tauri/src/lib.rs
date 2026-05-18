@@ -116,6 +116,10 @@ pub fn run() {
             commands::onboarding::reset_onboarding,
             capabilities::screenshot::take_screenshot,
             capabilities::applescript::run_applescript,
+            capabilities::click::click,
+            capabilities::type_keys::type_keys,
+            capabilities::notify::notify,
+            capabilities::read_ax::read_ax,
         ])
         .setup(move |app| {
             // Set macOS dock icon (needed for dev builds without .app bundle).

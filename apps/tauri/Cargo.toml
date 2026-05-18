@@ -24,6 +24,8 @@ base64 = "0.22"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
+core-graphics = "0.24"
+core-foundation = "0.10"
 
 [features]
 default = ["custom-protocol"]
