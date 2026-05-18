@@ -101,8 +101,7 @@ async fn load_acp_bridge_target() -> Result<BridgeTarget> {
     let config: BridgeConfig = toml::from_str(&contents)
         .with_context(|| format!("failed to parse {}", config_path.display()))?;
 
-    let pair_code =
-        pair_code_from_args(args)?.or_else(|| env_value(ACP_BRIDGE_PAIRING_CODE_ENV));
+    let pair_code = pair_code_from_args(args)?.or_else(|| env_value(ACP_BRIDGE_PAIRING_CODE_ENV));
     resolve_acp_bridge_target(&config.gateway, &config_dir, pair_code.as_deref()).await
 }
 
