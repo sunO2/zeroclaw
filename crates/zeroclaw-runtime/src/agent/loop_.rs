@@ -129,6 +129,31 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 ///   - `always` group: included unconditionally if any pattern matches the tool name.
 ///   - `dynamic` group: included if any pattern matches AND the user message contains
 ///     at least one keyword (case-insensitive substring).
+/// Drop tools from `tools` that fail either gate.
+///
+/// 1. The parent agent's `SecurityPolicy.allowed_tools` allowlist plus
+///    `SecurityPolicy.excluded_tools` denylist, evaluated via
+///    [`SecurityPolicy::is_tool_allowed`].
+/// 2. The caller-supplied `caller_allowed` filter (the existing
+///    `agent::run`-level `allowed_tools` parameter).
+///
+/// A tool survives only when BOTH gates admit its name. `None` on
+/// either gate is unrestricted for that gate alone — the other still
+/// applies. Built-in tools, MCP tools, and skill tools all flow through
+/// the same filter; the helper does not know or care about category.
+pub fn apply_policy_tool_filter(
+    tools: &mut Vec<Box<dyn Tool>>,
+    policy: Option<&zeroclaw_config::policy::SecurityPolicy>,
+    caller_allowed: Option<&[String]>,
+) {
+    tools.retain(|t| {
+        let name = t.name();
+        let policy_ok = policy.is_none_or(|p| p.is_tool_allowed(name));
+        let caller_ok = caller_allowed.is_none_or(|list| list.iter().any(|n| n == name));
+        policy_ok && caller_ok
+    });
+}
+
 pub fn filter_tool_specs_for_turn(
     tool_specs: Vec<crate::tools::ToolSpec>,
     groups: &[zeroclaw_config::schema::ToolFilterGroup],
@@ -2423,12 +2448,31 @@ pub async fn run(
         }
 
         // ── Capability-based tool access control ─────────────────────
-        // When `allowed_tools` is `Some(list)`, restrict the tool registry to only
-        // those tools whose name appears in the list. Unknown names are silently
-        // ignored. When `None`, all tools remain available (backward compatible).
-        if let Some(ref allow_list) = allowed_tools {
-            tools_registry.retain(|t| allow_list.iter().any(|name| name == t.name()));
-            ::zeroclaw_log::record!(INFO, ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(::serde_json::json!({"allowed": allow_list.len(), "retained": tools_registry.len()})), "Applied capability-based tool access filter");
+        // Two-gate filter: parent agent's SecurityPolicy
+        // (`allowed_tools` + `excluded_tools`) AND the caller-supplied
+        // `allowed_tools` parameter. Both must admit a tool name for
+        // the tool to survive. `None` on either gate is unrestricted
+        // for that gate alone.
+        let before_filter = tools_registry.len();
+        apply_policy_tool_filter(
+            &mut tools_registry,
+            Some(security.as_ref()),
+            allowed_tools.as_deref(),
+        );
+        if tools_registry.len() != before_filter {
+            ::zeroclaw_log::record!(
+                INFO,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note).with_attrs(
+                    ::serde_json::json!({
+                        "before": before_filter,
+                        "retained": tools_registry.len(),
+                        "policy_allowed": security.allowed_tools.as_ref().map(|v| v.len()),
+                        "policy_excluded": security.excluded_tools.as_ref().map(|v| v.len()),
+                        "caller_allowed": allowed_tools.as_ref().map(|v| v.len()),
+                    })
+                ),
+                "Applied capability-based tool access filter"
+            );
         }
 
         // ── Wire MCP tools (non-fatal) — CLI path ────────────────────
