@@ -3763,19 +3763,65 @@ Ensure only one `zeroclaw` process is using this bot token."
             .send()
             .await;
 
-        match resp {
-            Ok(r) if r.status().is_success() => {}
+        let send_ok = match resp {
+            Ok(r) if r.status().is_success() => true,
             Ok(r) => {
-                self.pending_approvals.lock().await.remove(&approval_id);
                 let status = r.status();
                 let err = r.text().await.unwrap_or_default();
-                anyhow::bail!("Telegram sendMessage (approval) failed ({status}): {err}");
+                ::zeroclaw_log::record!(
+                    WARN,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Unknown)
+                        .with_attrs(::serde_json::json!({"status": status.to_string(), "err": err})),
+                    "Telegram sendMessage (approval) with HTML failed; retrying without parse_mode"
+                );
+
+                // Fallback: plain text, no parse_mode, keep the buttons
+                let plain_text = format!(
+                    "🔧 Tool approval required\n\nTool: {}\n{}\n\nTap a button below:",
+                    request.tool_name, request.arguments_summary
+                );
+                let mut plain_body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": plain_text,
+                    "reply_markup": reply_markup,
+                });
+                if let Some(tid) = thread_id {
+                    plain_body["message_thread_id"] = serde_json::Value::String(tid.to_string());
+                }
+
+                let plain_resp = self
+                    .http_client()
+                    .post(self.api_url("sendMessage"))
+                    .json(&plain_body)
+                    .send()
+                    .await;
+
+                match plain_resp {
+                    Ok(r) if r.status().is_success() => true,
+                    Ok(r) => {
+                        let status = r.status();
+                        let err = r.text().await.unwrap_or_default();
+                        self.pending_approvals.lock().await.remove(&approval_id);
+                        anyhow::bail!("Telegram sendMessage (approval) failed ({status}): {err}");
+                    }
+                    Err(e) => {
+                        self.pending_approvals.lock().await.remove(&approval_id);
+                        return Err(e.into());
+                    }
+                }
             }
             Err(e) => {
                 self.pending_approvals.lock().await.remove(&approval_id);
                 return Err(e.into());
             }
+        };
+
+        if !send_ok {
+            self.pending_approvals.lock().await.remove(&approval_id);
+            anyhow::bail!("Telegram sendMessage (approval) failed after fallback");
         }
+
 
         // Wait for the user to tap a button. Timeout is configurable via
         // `channels.telegram.approval_timeout_secs` (default 120s).
