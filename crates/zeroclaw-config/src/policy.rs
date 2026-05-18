@@ -2470,6 +2470,108 @@ mod tests {
         assert!(!p.is_tool_allowed("spawn_subagent"));
     }
 
+    // ── from_profiles propagation coverage ────────────────────
+    //
+    // Every authorization-shaped field on RiskProfileConfig must reach
+    // SecurityPolicy. The test constructs a config with non-default
+    // values across the full field set and asserts each one landed.
+    // New risk_profile fields without an assertion here are silently
+    // dead config; that's the failure mode this test exists to prevent.
+
+    #[test]
+    fn from_profiles_propagates_every_risk_profile_field() {
+        use crate::schema::RiskProfileConfig;
+        use std::path::Path;
+
+        let rp = RiskProfileConfig {
+            level: AutonomyLevel::ReadOnly,
+            workspace_only: true,
+            allowed_commands: vec!["only_this".into()],
+            forbidden_paths: vec!["/secret".into()],
+            require_approval_for_medium_risk: false,
+            block_high_risk_commands: false,
+            shell_env_passthrough: vec!["EDITOR".into(), "PAGER".into()],
+            auto_approve: vec!["memory_recall".into()],
+            always_ask: vec!["shell".into()],
+            allowed_roots: vec!["/tmp/extra".into()],
+            allowed_tools: vec!["shell".into(), "memory_recall".into()],
+            excluded_tools: vec!["spawn_subagent".into()],
+            sandbox_enabled: Some(true),
+            sandbox_backend: Some("firejail".into()),
+            firejail_args: vec!["--net=none".into()],
+        };
+
+        let policy = SecurityPolicy::from_profiles(&rp, None, Path::new("/ws"));
+
+        assert_eq!(policy.autonomy, AutonomyLevel::ReadOnly, "level → autonomy");
+        assert!(policy.workspace_only, "workspace_only");
+        assert_eq!(policy.allowed_commands, vec!["only_this".to_string()]);
+        assert_eq!(policy.forbidden_paths, vec!["/secret".to_string()]);
+        assert!(!policy.require_approval_for_medium_risk);
+        assert!(!policy.block_high_risk_commands);
+        assert_eq!(
+            policy.shell_env_passthrough,
+            vec!["EDITOR".to_string(), "PAGER".to_string()]
+        );
+        assert_eq!(
+            policy.auto_approve,
+            vec!["memory_recall".to_string()],
+            "auto_approve must reach the policy"
+        );
+        assert_eq!(
+            policy.always_ask,
+            vec!["shell".to_string()],
+            "always_ask must reach the policy"
+        );
+        assert!(
+            policy.allowed_roots.iter().any(|p| p.ends_with("extra")),
+            "allowed_roots expansion must reach the policy"
+        );
+        assert_eq!(
+            policy.allowed_tools.as_deref(),
+            Some(&["shell".to_string(), "memory_recall".to_string()][..]),
+            "allowed_tools must reach the policy"
+        );
+        assert_eq!(
+            policy.excluded_tools.as_deref(),
+            Some(&["spawn_subagent".to_string()][..]),
+            "excluded_tools must reach the policy"
+        );
+        assert_eq!(policy.sandbox_enabled, Some(true), "sandbox_enabled");
+        assert_eq!(
+            policy.sandbox_backend.as_deref(),
+            Some("firejail"),
+            "sandbox_backend"
+        );
+        assert_eq!(
+            policy.firejail_args,
+            vec!["--net=none".to_string()],
+            "firejail_args"
+        );
+    }
+
+    /// The Full-autonomy override on `workspace_only` is intentional
+    /// (issue #5463). The propagation test above sets ReadOnly so the
+    /// override is dormant; this companion test pins the override path
+    /// so a future refactor of from_profiles can't quietly remove it.
+    #[test]
+    fn from_profiles_full_autonomy_drops_workspace_only() {
+        use crate::schema::RiskProfileConfig;
+        use std::path::Path;
+
+        let rp = RiskProfileConfig {
+            level: AutonomyLevel::Full,
+            workspace_only: true,
+            ..RiskProfileConfig::default()
+        };
+
+        let policy = SecurityPolicy::from_profiles(&rp, None, Path::new("/ws"));
+        assert!(
+            !policy.workspace_only,
+            "Full autonomy must drop workspace_only even when the profile sets it true"
+        );
+    }
+
     fn unix_forbidden_path_policy() -> SecurityPolicy {
         SecurityPolicy {
             workspace_dir: PathBuf::from("/workspace"),
