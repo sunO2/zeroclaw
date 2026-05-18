@@ -78,6 +78,7 @@ md5 = { version = "0.8", optional = true }
 
 [features]
 default = [
+    "channel-acp-server",
     "channel-discord", "channel-slack", "channel-signal", "channel-mattermost",
     "channel-irc", "channel-imessage", "channel-dingtalk", "channel-qq",
     "channel-bluesky", "channel-twitter", "channel-reddit", "channel-notion",
