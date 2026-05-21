@@ -408,11 +408,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn make_rpc() -> (Arc<RpcOutbound>, mpsc::Receiver<String>) {
-        // Fabricate an RpcOutbound that writes into a test mpsc instead of
-        // stdout. Uses RpcOutbound's public constructor surface via the
-        // re-exported `for_testing` helper.
         let (tx, rx) = mpsc::channel::<String>(16);
-        (Arc::new(RpcOutbound::for_testing(tx)), rx)
+        (Arc::new(RpcOutbound::new(tx)), rx)
     }
 
     #[tokio::test]
@@ -513,7 +510,7 @@ mod tests {
         let id = req["id"].as_str().unwrap().to_string();
 
         // Simulate the ACP client picking "Option B" (choice-1).
-        rpc_for_resp.dispatch_response_for_test(
+        rpc_for_resp.dispatch_response(
             &id,
             Some(json!({"outcome": {"outcome": "selected", "optionId": "choice-1"}})),
             None,
@@ -540,7 +537,7 @@ mod tests {
         let req: serde_json::Value = serde_json::from_str(&line).unwrap();
         let id = req["id"].as_str().unwrap().to_string();
 
-        rpc_for_resp.dispatch_response_for_test(
+        rpc_for_resp.dispatch_response(
             &id,
             Some(json!({"outcome": {"outcome": "cancelled"}})),
             None,
@@ -591,7 +588,7 @@ mod tests {
         );
         let id = req["id"].as_str().unwrap().to_string();
 
-        rpc_for_resp.dispatch_response_for_test(
+        rpc_for_resp.dispatch_response(
             &id,
             Some(json!({"outcome": {"outcome": "selected", "optionId": "allow-once"}})),
             None,
@@ -617,7 +614,7 @@ mod tests {
         let req: serde_json::Value = serde_json::from_str(&line).unwrap();
         let id = req["id"].as_str().unwrap().to_string();
 
-        rpc_for_resp.dispatch_response_for_test(
+        rpc_for_resp.dispatch_response(
             &id,
             Some(json!({"outcome": {"outcome": "selected", "optionId": "allow-always"}})),
             None,
@@ -639,7 +636,7 @@ mod tests {
         let line = rx.recv().await.unwrap();
         let req: serde_json::Value = serde_json::from_str(&line).unwrap();
         let id = req["id"].as_str().unwrap().to_string();
-        rpc_for_resp.dispatch_response_for_test(
+        rpc_for_resp.dispatch_response(
             &id,
             Some(json!({"outcome": {"outcome": "cancelled"}})),
             None,
@@ -683,7 +680,7 @@ mod tests {
         assert_eq!(content[0]["newText"], "let x = 2;");
 
         let id = req["id"].as_str().unwrap().to_string();
-        rpc_for_resp.dispatch_response_for_test(
+        rpc_for_resp.dispatch_response(
             &id,
             Some(json!({"outcome": {"outcome": "selected", "optionId": "allow-once"}})),
             None,
