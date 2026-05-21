@@ -74,6 +74,15 @@ enum Screen {
     },
 }
 
+enum FilterAction {
+    /// Key was consumed by the filter (typed, navigated, dismissed).
+    Consumed,
+    /// Key was not handled — caller should process it normally.
+    Passthrough,
+    /// Enter pressed — caller should act on the currently-selected filtered item.
+    Accept,
+}
+
 // ── App state ────────────────────────────────────────────────────
 
 struct App<'a> {
@@ -99,6 +108,9 @@ struct App<'a> {
     select_cursor: usize,
     select_items: Vec<String>,
     status_msg: Option<String>,
+    // Filter state: None = inactive, Some(buf) = active filter
+    filter: Option<String>,
+    filter_cursor: usize,
 }
 
 impl<'a> App<'a> {
@@ -121,6 +133,8 @@ impl<'a> App<'a> {
             select_cursor: 0,
             select_items: Vec::new(),
             status_msg: None,
+            filter: None,
+            filter_cursor: 0,
         }
     }
 
@@ -209,6 +223,22 @@ impl<'a> App<'a> {
     // ── Section list ─────────────────────────────────────────────
 
     async fn handle_section_list(&mut self, key: KeyEvent) -> Result<bool> {
+        let labels: Vec<String> = self.sections.iter().map(|s| s.label.clone()).collect();
+        let visible = self.filtered_indices(&labels);
+
+        match self.handle_filter_key(key, visible.len()) {
+            FilterAction::Consumed => return Ok(false),
+            FilterAction::Accept => {
+                if let Some(&orig) = visible.get(self.filter_cursor) {
+                    self.section_cursor = orig;
+                    self.deactivate_filter();
+                    return self.enter_section(orig).await;
+                }
+                return Ok(false);
+            }
+            FilterAction::Passthrough => {}
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Up | KeyCode::Char('k') => {
@@ -220,39 +250,41 @@ impl<'a> App<'a> {
                 }
             }
             KeyCode::Enter => {
-                if let Some(section) = self.sections.get(self.section_cursor) {
-                    let idx = self.section_cursor;
-                    let section_key = section.key.clone();
-                    match section.shape {
-                        Some(SectionShape::TypedFamilyMap) => {
-                            self.types = self.types_for_section(&section_key);
-                            self.type_cursor = 0;
-                            self.load_type_alias_counts().await?;
-                            self.screen = Screen::TypeList { section_idx: idx };
-                        }
-                        Some(SectionShape::OneTierAliasMap) => {
-                            self.load_aliases(&section_key).await?;
-                            self.screen = Screen::AliasList {
-                                section_idx: idx,
-                                map_path: section_key.clone(),
-                                breadcrumb: vec![section_key],
-                            };
-                        }
-                        Some(SectionShape::DirectForm)
-                        | Some(SectionShape::BackendPicker)
-                        | None => {
-                            self.load_fields(&section_key).await?;
-                            self.screen = Screen::FieldList {
-                                section_idx: idx,
-                                prefix: section_key.clone(),
-                                breadcrumb: vec![section_key],
-                            };
-                        }
-                    }
-                    self.status_msg = None;
-                }
+                return self.enter_section(self.section_cursor).await;
             }
             _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn enter_section(&mut self, idx: usize) -> Result<bool> {
+        if let Some(section) = self.sections.get(idx) {
+            let section_key = section.key.clone();
+            match section.shape {
+                Some(SectionShape::TypedFamilyMap) => {
+                    self.types = self.types_for_section(&section_key);
+                    self.type_cursor = 0;
+                    self.load_type_alias_counts().await?;
+                    self.screen = Screen::TypeList { section_idx: idx };
+                }
+                Some(SectionShape::OneTierAliasMap) => {
+                    self.load_aliases(&section_key).await?;
+                    self.screen = Screen::AliasList {
+                        section_idx: idx,
+                        map_path: section_key.clone(),
+                        breadcrumb: vec![section_key],
+                    };
+                }
+                Some(SectionShape::DirectForm) | Some(SectionShape::BackendPicker) | None => {
+                    self.load_fields(&section_key).await?;
+                    self.screen = Screen::FieldList {
+                        section_idx: idx,
+                        prefix: section_key.clone(),
+                        breadcrumb: vec![section_key],
+                    };
+                }
+            }
+            self.status_msg = None;
         }
         Ok(false)
     }
@@ -260,6 +292,25 @@ impl<'a> App<'a> {
     // ── Type list (TypedFamilyMap) ───────────────────────────────
 
     async fn handle_type_list(&mut self, key: KeyEvent) -> Result<()> {
+        let type_names: Vec<String> = self
+            .types
+            .iter()
+            .map(|t| t.path.rsplit('.').next().unwrap_or(&t.path).to_string())
+            .collect();
+        let visible = self.filtered_indices(&type_names);
+
+        match self.handle_filter_key(key, visible.len()) {
+            FilterAction::Consumed => return Ok(()),
+            FilterAction::Accept => {
+                if let Some(&orig) = visible.get(self.filter_cursor) {
+                    self.deactivate_filter();
+                    return self.enter_type(orig).await;
+                }
+                return Ok(());
+            }
+            FilterAction::Passthrough => {}
+        }
+
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.screen = Screen::SectionList;
@@ -274,23 +325,28 @@ impl<'a> App<'a> {
                 }
             }
             KeyCode::Enter => {
-                if let (Some(tmpl), Screen::TypeList { section_idx }) =
-                    (self.types.get(self.type_cursor), &self.screen)
-                {
-                    let section_idx = *section_idx;
-                    let map_path = tmpl.path.clone();
-                    let type_name = map_path.rsplit('.').next().unwrap_or(&map_path).to_string();
-                    let section_key = self.sections[section_idx].key.clone();
-                    self.load_aliases(&map_path).await?;
-                    self.screen = Screen::AliasList {
-                        section_idx,
-                        map_path,
-                        breadcrumb: vec![section_key, type_name],
-                    };
-                    self.status_msg = None;
-                }
+                self.enter_type(self.type_cursor).await?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    async fn enter_type(&mut self, orig_idx: usize) -> Result<()> {
+        if let (Some(tmpl), Screen::TypeList { section_idx }) =
+            (self.types.get(orig_idx), &self.screen)
+        {
+            let section_idx = *section_idx;
+            let map_path = tmpl.path.clone();
+            let type_name = map_path.rsplit('.').next().unwrap_or(&map_path).to_string();
+            let section_key = self.sections[section_idx].key.clone();
+            self.load_aliases(&map_path).await?;
+            self.screen = Screen::AliasList {
+                section_idx,
+                map_path,
+                breadcrumb: vec![section_key, type_name],
+            };
+            self.status_msg = None;
         }
         Ok(())
     }
@@ -298,8 +354,28 @@ impl<'a> App<'a> {
     // ── Alias list ───────────────────────────────────────────────
 
     async fn handle_alias_list(&mut self, key: KeyEvent) -> Result<()> {
-        // Extra item at end for [+ Add]
-        let add_idx = self.aliases.len();
+        let visible = self.filtered_indices(&self.aliases);
+        // +1 for [+ Add] (only when not filtering)
+        let has_add = self.filter.is_none();
+        let visible_total = if has_add {
+            visible.len() + 1
+        } else {
+            visible.len()
+        };
+
+        match self.handle_filter_key(key, visible.len()) {
+            FilterAction::Consumed => return Ok(()),
+            FilterAction::Accept => {
+                if let Some(&orig) = visible.get(self.filter_cursor) {
+                    self.deactivate_filter();
+                    return self.enter_alias(orig).await;
+                }
+                return Ok(());
+            }
+            FilterAction::Passthrough => {}
+        }
+
+        let add_pos = visible.len(); // position of [+ Add] in the rendered list
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 let screen = std::mem::replace(&mut self.screen, Screen::SectionList);
@@ -309,12 +385,10 @@ impl<'a> App<'a> {
                     ..
                 } = screen
                 {
-                    // If breadcrumb has 2+ segments, we came from TypeList
                     if breadcrumb.len() >= 2 {
                         self.types = self.types_for_section(&self.sections[section_idx].key);
                         self.screen = Screen::TypeList { section_idx };
                     }
-                    // Otherwise go back to SectionList (already set)
                 }
                 self.status_msg = None;
             }
@@ -322,13 +396,12 @@ impl<'a> App<'a> {
                 self.alias_cursor = self.alias_cursor.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.alias_cursor + 1 <= add_idx {
+                if self.alias_cursor + 1 < visible_total {
                     self.alias_cursor += 1;
                 }
             }
             KeyCode::Enter => {
-                if self.alias_cursor == add_idx {
-                    // [+ Add] — switch to alias creation prompt
+                if has_add && self.alias_cursor == add_pos {
                     if let Screen::AliasList {
                         section_idx,
                         map_path,
@@ -343,26 +416,8 @@ impl<'a> App<'a> {
                             breadcrumb: breadcrumb.clone(),
                         };
                     }
-                } else if let Some(alias) = self.aliases.get(self.alias_cursor) {
-                    if let Screen::AliasList {
-                        section_idx,
-                        map_path,
-                        breadcrumb,
-                        ..
-                    } = &self.screen
-                    {
-                        let prefix = format!("{}.{}", map_path, alias);
-                        let mut bc = breadcrumb.clone();
-                        bc.push(alias.clone());
-                        let si = *section_idx;
-                        self.load_fields(&prefix).await?;
-                        self.screen = Screen::FieldList {
-                            section_idx: si,
-                            prefix,
-                            breadcrumb: bc,
-                        };
-                        self.status_msg = None;
-                    }
+                } else if self.alias_cursor < self.aliases.len() {
+                    self.enter_alias(self.alias_cursor).await?;
                 }
             }
             KeyCode::Char('x') => {
@@ -385,6 +440,31 @@ impl<'a> App<'a> {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    async fn enter_alias(&mut self, orig_idx: usize) -> Result<()> {
+        if let Some(alias) = self.aliases.get(orig_idx) {
+            if let Screen::AliasList {
+                section_idx,
+                map_path,
+                breadcrumb,
+                ..
+            } = &self.screen
+            {
+                let prefix = format!("{}.{}", map_path, alias);
+                let mut bc = breadcrumb.clone();
+                bc.push(alias.clone());
+                let si = *section_idx;
+                self.load_fields(&prefix).await?;
+                self.screen = Screen::FieldList {
+                    section_idx: si,
+                    prefix,
+                    breadcrumb: bc,
+                };
+                self.status_msg = None;
+            }
         }
         Ok(())
     }
@@ -579,6 +659,77 @@ impl<'a> App<'a> {
         !self.select_items.is_empty()
     }
 
+    // ── Filter helpers ───────────────────────────────────────────
+
+    fn activate_filter(&mut self) {
+        self.filter = Some(String::new());
+        self.filter_cursor = 0;
+    }
+
+    fn deactivate_filter(&mut self) {
+        self.filter = None;
+    }
+
+    fn filtered_indices<S: AsRef<str>>(&self, items: &[S]) -> Vec<usize> {
+        match &self.filter {
+            None => (0..items.len()).collect(),
+            Some(buf) if buf.is_empty() => (0..items.len()).collect(),
+            Some(buf) => {
+                let needle = buf.to_lowercase();
+                items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.as_ref().to_lowercase().contains(&needle))
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+        }
+    }
+
+    fn handle_filter_key(&mut self, key: KeyEvent, filtered_len: usize) -> FilterAction {
+        if self.filter.is_none() {
+            if key.code == KeyCode::Char('/') {
+                self.activate_filter();
+                return FilterAction::Consumed;
+            }
+            return FilterAction::Passthrough;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.deactivate_filter();
+                FilterAction::Consumed
+            }
+            KeyCode::Backspace => {
+                if let Some(buf) = &mut self.filter {
+                    buf.pop();
+                    if self.filter_cursor >= filtered_len {
+                        self.filter_cursor = filtered_len.saturating_sub(1);
+                    }
+                }
+                FilterAction::Consumed
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.filter_cursor = self.filter_cursor.saturating_sub(1);
+                FilterAction::Consumed
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.filter_cursor + 1 < filtered_len {
+                    self.filter_cursor += 1;
+                }
+                FilterAction::Consumed
+            }
+            KeyCode::Char(c) => {
+                if let Some(buf) = &mut self.filter {
+                    buf.push(c);
+                    self.filter_cursor = 0;
+                }
+                FilterAction::Consumed
+            }
+            KeyCode::Enter => FilterAction::Accept,
+            _ => FilterAction::Consumed,
+        }
+    }
+
     // ── Field edit ───────────────────────────────────────────────
 
     async fn handle_field_edit(&mut self, key: KeyEvent) -> Result<()> {
@@ -732,18 +883,25 @@ impl<'a> App<'a> {
 
         render_breadcrumb(frame, r.breadcrumb, &["Config"]);
 
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!("ZeroClaw v{}", self.rpc.server_version),
-                theme::dim_style(),
-            )),
-            r.help,
-        );
+        if let Some(buf) = &self.filter {
+            render_filter_bar(frame, r.help, buf);
+        } else {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!("ZeroClaw v{}", self.rpc.server_version),
+                    theme::dim_style(),
+                )),
+                r.help,
+            );
+        }
 
-        let items: Vec<ListItem> = self
-            .sections
+        let labels: Vec<String> = self.sections.iter().map(|s| s.label.clone()).collect();
+        let visible = self.filtered_indices(&labels);
+
+        let items: Vec<ListItem> = visible
             .iter()
-            .map(|s| {
+            .map(|&i| {
+                let s = &self.sections[i];
                 let badge = if s.completed { " ✓" } else { "" };
                 ListItem::new(Line::from(Span::styled(
                     format!("{}{badge}", s.label),
@@ -752,8 +910,20 @@ impl<'a> App<'a> {
             })
             .collect();
 
+        let cursor = if self.filter.is_some() {
+            self.filter_cursor
+        } else {
+            // Map the real cursor to the visible position
+            visible
+                .iter()
+                .position(|&i| i == self.section_cursor)
+                .unwrap_or(0)
+        };
+
         let mut state = ListState::default();
-        state.select(Some(self.section_cursor));
+        if !items.is_empty() {
+            state.select(Some(cursor.min(items.len().saturating_sub(1))));
+        }
 
         frame.render_stateful_widget(
             List::new(items)
@@ -764,7 +934,12 @@ impl<'a> App<'a> {
             &mut state,
         );
 
-        self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=open  q=quit");
+        let hints = if self.filter.is_some() {
+            "↑↓=navigate  Enter=open  Esc=clear filter"
+        } else {
+            "↑↓/jk=navigate  Enter=open  /=filter  q=quit"
+        };
+        self.draw_footer(frame, r, hints);
     }
 
     fn draw_type_list(&self, frame: &mut Frame, area: Rect, section_idx: usize) {
@@ -773,18 +948,27 @@ impl<'a> App<'a> {
 
         render_breadcrumb(frame, r.breadcrumb, &["Config", &section.label]);
 
-        frame.render_widget(
-            Paragraph::new(Span::styled(&section.help, theme::dim_style()))
-                .wrap(Wrap { trim: false }),
-            r.help,
-        );
+        if let Some(buf) = &self.filter {
+            render_filter_bar(frame, r.help, buf);
+        } else {
+            frame.render_widget(
+                Paragraph::new(Span::styled(&section.help, theme::dim_style()))
+                    .wrap(Wrap { trim: false }),
+                r.help,
+            );
+        }
 
-        let items: Vec<ListItem> = self
+        let type_names: Vec<String> = self
             .types
             .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let name = t.path.rsplit('.').next().unwrap_or(&t.path);
+            .map(|t| t.path.rsplit('.').next().unwrap_or(&t.path).to_string())
+            .collect();
+        let visible = self.filtered_indices(&type_names);
+
+        let items: Vec<ListItem> = visible
+            .iter()
+            .map(|&i| {
+                let name = &type_names[i];
                 let count = self.type_alias_counts.get(i).copied().unwrap_or(0);
                 let mut spans = vec![Span::styled(name.to_string(), theme::body_style())];
                 if count > 0 {
@@ -794,8 +978,19 @@ impl<'a> App<'a> {
             })
             .collect();
 
+        let cursor = if self.filter.is_some() {
+            self.filter_cursor
+        } else {
+            visible
+                .iter()
+                .position(|&i| i == self.type_cursor)
+                .unwrap_or(0)
+        };
+
         let mut state = ListState::default();
-        state.select(Some(self.type_cursor));
+        if !items.is_empty() {
+            state.select(Some(cursor.min(items.len().saturating_sub(1))));
+        }
 
         frame.render_stateful_widget(
             List::new(items)
@@ -810,7 +1005,12 @@ impl<'a> App<'a> {
             &mut state,
         );
 
-        self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=open  Esc=back");
+        let hints = if self.filter.is_some() {
+            "↑↓=navigate  Enter=open  Esc=clear filter"
+        } else {
+            "↑↓/jk=navigate  Enter=open  /=filter  Esc=back"
+        };
+        self.draw_footer(frame, r, hints);
     }
 
     fn draw_alias_list(
@@ -828,17 +1028,22 @@ impl<'a> App<'a> {
             .collect();
         render_breadcrumb(frame, r.breadcrumb, &bc);
 
-        frame.render_widget(
-            Paragraph::new(Span::styled(&section.help, theme::dim_style()))
-                .wrap(Wrap { trim: false }),
-            r.help,
-        );
+        if let Some(buf) = &self.filter {
+            render_filter_bar(frame, r.help, buf);
+        } else {
+            frame.render_widget(
+                Paragraph::new(Span::styled(&section.help, theme::dim_style()))
+                    .wrap(Wrap { trim: false }),
+                r.help,
+            );
+        }
 
-        let mut items: Vec<ListItem> = self
-            .aliases
+        let visible = self.filtered_indices(&self.aliases);
+
+        let mut items: Vec<ListItem> = visible
             .iter()
-            .enumerate()
-            .map(|(i, a)| {
+            .map(|&i| {
+                let a = &self.aliases[i];
                 let mut spans = vec![Span::styled(a.clone(), theme::body_style())];
                 match self.alias_enabled.get(i).copied().flatten() {
                     Some(true) => spans.push(Span::styled("  ✓", theme::accent_style())),
@@ -848,13 +1053,25 @@ impl<'a> App<'a> {
                 ListItem::new(Line::from(spans))
             })
             .collect();
-        items.push(ListItem::new(Line::from(Span::styled(
-            "[+ Add]",
-            theme::accent_style(),
-        ))));
+
+        // Only show [+ Add] when not filtering
+        if self.filter.is_none() {
+            items.push(ListItem::new(Line::from(Span::styled(
+                "[+ Add]",
+                theme::accent_style(),
+            ))));
+        }
+
+        let cursor = if self.filter.is_some() {
+            self.filter_cursor
+        } else {
+            self.alias_cursor
+        };
 
         let mut state = ListState::default();
-        state.select(Some(self.alias_cursor));
+        if !items.is_empty() {
+            state.select(Some(cursor.min(items.len().saturating_sub(1))));
+        }
 
         frame.render_stateful_widget(
             List::new(items)
@@ -865,7 +1082,12 @@ impl<'a> App<'a> {
             &mut state,
         );
 
-        self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=open  x=delete  Esc=back");
+        let hints = if self.filter.is_some() {
+            "↑↓=navigate  Enter=open  Esc=clear filter"
+        } else {
+            "↑↓/jk=navigate  Enter=open  x=delete  /=filter  Esc=back"
+        };
+        self.draw_footer(frame, r, hints);
     }
 
     fn draw_alias_create(&self, frame: &mut Frame, area: Rect, breadcrumb: &[String]) {
@@ -1087,6 +1309,14 @@ fn regions(area: Rect) -> Regions {
         status: chunks[3],
         hints: chunks[4],
     }
+}
+
+fn render_filter_bar(frame: &mut Frame, area: Rect, buf: &str) {
+    let display = format!("/{buf}█");
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(display, theme::input_style()))),
+        area,
+    );
 }
 
 fn render_breadcrumb(frame: &mut Frame, area: Rect, segments: &[&str]) {
