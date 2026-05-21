@@ -138,7 +138,11 @@ impl RpcDispatcher {
 
         let token = params.get("token").and_then(Value::as_str).unwrap_or("");
         if self.pairing.require_pairing() && !self.pairing.is_authenticated(token) {
-            return Err(rpc_err(AUTH_REQUIRED, "Invalid or missing pairing token"));
+            return Err(rpc_err(
+                AUTH_REQUIRED,
+                "Invalid or missing pairing token. Check the daemon startup output for the \
+                 pairing code, or run: zeroclaw gateway get-paircode --new",
+            ));
         }
 
         self.authenticated = true;
@@ -386,4 +390,108 @@ fn notification_for_turn_event(session_id: &str, event: &TurnEvent) -> Option<St
         "params": params,
     }))
     .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn parse(s: &str) -> Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn chunk_notification() {
+        let event = TurnEvent::Chunk {
+            delta: "hello".into(),
+        };
+        let json = notification_for_turn_event("s1", &event).unwrap();
+        let v = parse(&json);
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["method"], "session/update");
+        assert_eq!(v["params"]["sessionId"], "s1");
+        assert_eq!(v["params"]["type"], "agent_message_chunk");
+        assert_eq!(v["params"]["text"], "hello");
+    }
+
+    #[test]
+    fn thinking_notification() {
+        let event = TurnEvent::Thinking {
+            delta: "hmm".into(),
+        };
+        let json = notification_for_turn_event("s1", &event).unwrap();
+        let v = parse(&json);
+        assert_eq!(v["params"]["type"], "agent_thought_chunk");
+        assert_eq!(v["params"]["text"], "hmm");
+    }
+
+    #[test]
+    fn tool_call_notification() {
+        let event = TurnEvent::ToolCall {
+            id: "tc_1".into(),
+            name: "bash".into(),
+            args: json!({"cmd": "ls"}),
+        };
+        let json = notification_for_turn_event("s1", &event).unwrap();
+        let v = parse(&json);
+        assert_eq!(v["params"]["type"], "tool_call");
+        assert_eq!(v["params"]["toolCallId"], "tc_1");
+        assert_eq!(v["params"]["name"], "bash");
+        assert_eq!(v["params"]["rawInput"]["cmd"], "ls");
+    }
+
+    #[test]
+    fn tool_result_notification() {
+        let event = TurnEvent::ToolResult {
+            id: "tc_1".into(),
+            name: "bash".into(),
+            output: "file.txt".into(),
+        };
+        let json = notification_for_turn_event("s1", &event).unwrap();
+        let v = parse(&json);
+        assert_eq!(v["params"]["type"], "tool_result");
+        assert_eq!(v["params"]["toolCallId"], "tc_1");
+        assert_eq!(v["params"]["rawOutput"], "file.txt");
+    }
+
+    #[test]
+    fn approval_request_notification() {
+        let event = TurnEvent::ApprovalRequest {
+            request_id: "ar_1".into(),
+            tool_name: "bash".into(),
+            arguments_summary: "rm -rf /".into(),
+            timeout_secs: 30,
+        };
+        let json = notification_for_turn_event("s1", &event).unwrap();
+        let v = parse(&json);
+        assert_eq!(v["params"]["type"], "approval_request");
+        assert_eq!(v["params"]["requestId"], "ar_1");
+        assert_eq!(v["params"]["toolName"], "bash");
+        assert_eq!(v["params"]["timeoutSecs"], 30);
+    }
+
+    #[test]
+    fn usage_event_returns_none() {
+        let event = TurnEvent::Usage {
+            input_tokens: Some(100),
+            output_tokens: Some(50),
+            cost_usd: Some(0.01),
+        };
+        assert!(notification_for_turn_event("s1", &event).is_none());
+    }
+
+    #[test]
+    fn require_str_present() {
+        let v = json!({"foo": "bar"});
+        assert_eq!(require_str(&v, "foo").unwrap(), "bar");
+    }
+
+    #[test]
+    fn require_str_missing() {
+        let v = json!({});
+        let err = require_str(&v, "foo").unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(err.message.contains("foo"));
+    }
 }

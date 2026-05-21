@@ -200,3 +200,206 @@ pub async fn run_unix_socket(config: Config, cancel: CancellationToken) -> Resul
     tokio::fs::remove_file(&path).await.ok();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    fn test_config(tmp: &std::path::Path) -> Config {
+        let mut config = Config {
+            data_dir: tmp.to_path_buf(),
+            config_path: tmp.join("config.toml"),
+            ..Config::default()
+        };
+        config.gateway.require_pairing = false;
+        config
+    }
+
+    #[tokio::test]
+    async fn socket_initialize_handshake() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let sock_path = config.data_dir.join("daemon.sock");
+        let cancel = CancellationToken::new();
+
+        let server_cancel = cancel.clone();
+        let server_config = config.clone();
+        let handle =
+            tokio::spawn(async move { run_unix_socket(server_config, server_cancel).await });
+
+        // Wait for socket to appear.
+        for _ in 0..50 {
+            if sock_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(sock_path.exists(), "socket never appeared");
+
+        // Connect and send initialize.
+        let stream = tokio::net::UnixStream::connect(&sock_path).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = tokio::io::BufReader::new(reader);
+
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": { "protocolVersion": 1, "token": "" },
+            "id": 1
+        });
+        writer
+            .write_all(format!("{}\n", req).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+
+        assert_eq!(resp["jsonrpc"], "2.0");
+        assert_eq!(resp["id"], 1);
+        assert_eq!(resp["result"]["protocolVersion"], 1);
+        assert!(resp["result"]["serverVersion"].is_string());
+        assert!(resp["error"].is_null());
+
+        // Send status (should work after auth).
+        let req2 = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "status",
+            "params": {},
+            "id": 2
+        });
+        writer
+            .write_all(format!("{}\n", req2).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line2 = String::new();
+        reader.read_line(&mut line2).await.unwrap();
+        let resp2: serde_json::Value = serde_json::from_str(line2.trim()).unwrap();
+        assert_eq!(resp2["id"], 2);
+        assert_eq!(resp2["result"]["activeSessions"], 0);
+
+        cancel.cancel();
+        drop(writer);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn socket_rejects_before_initialize() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let sock_path = config.data_dir.join("daemon.sock");
+        let cancel = CancellationToken::new();
+
+        let server_cancel = cancel.clone();
+        let server_config = config.clone();
+        tokio::spawn(async move {
+            let _ = run_unix_socket(server_config, server_cancel).await;
+        });
+
+        for _ in 0..50 {
+            if sock_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let stream = tokio::net::UnixStream::connect(&sock_path).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = tokio::io::BufReader::new(reader);
+
+        // Send status without initialize first.
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "status",
+            "params": {},
+            "id": 1
+        });
+        writer
+            .write_all(format!("{}\n", req).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+
+        assert!(resp["error"].is_object());
+        assert_eq!(
+            resp["error"]["code"],
+            zeroclaw_api::jsonrpc::error_codes::AUTH_REQUIRED
+        );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn socket_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let sock_path = config.data_dir.join("daemon.sock");
+        let cancel = CancellationToken::new();
+
+        let server_cancel = cancel.clone();
+        let server_config = config.clone();
+        tokio::spawn(async move {
+            let _ = run_unix_socket(server_config, server_cancel).await;
+        });
+
+        for _ in 0..50 {
+            if sock_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&sock_path).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "socket should be owner-only (0o600), got {mode:#o}"
+        );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn stale_socket_cleanup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let sock_path = config.data_dir.join("daemon.sock");
+
+        // Pre-create a stale socket file.
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        std::fs::write(&sock_path, b"stale").unwrap();
+        assert!(sock_path.exists());
+
+        let cancel = CancellationToken::new();
+        let server_cancel = cancel.clone();
+        let server_config = config.clone();
+        tokio::spawn(async move {
+            let _ = run_unix_socket(server_config, server_cancel).await;
+        });
+
+        // Wait for the listener to start (it should remove the stale file and bind).
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            // Try connecting -- if we can, the listener is up.
+            if tokio::net::UnixStream::connect(&sock_path).await.is_ok() {
+                break;
+            }
+        }
+
+        // Verify we can actually connect (stale file was replaced by real socket).
+        let stream = tokio::net::UnixStream::connect(&sock_path).await;
+        assert!(
+            stream.is_ok(),
+            "should be able to connect after stale cleanup"
+        );
+
+        cancel.cancel();
+    }
+}
