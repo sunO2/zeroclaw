@@ -1,8 +1,3 @@
-//! Interactive config manager — the TUI MVP.
-//!
-//! Server-driven: sections, fields, and metadata all come from RPC
-//! responses. The TUI is a renderer that maps `PropKind` to widget type.
-
 use std::io::{self, Stdout};
 
 use anyhow::Result;
@@ -19,15 +14,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
-use zeroclaw_config::traits::ConfigFieldEntry;
+use zeroclaw_config::sections::SectionShape;
+use zeroclaw_config::traits::{ConfigFieldEntry, PropKind};
 
-use crate::client::{OnboardSectionEntry, RpcClient};
+use crate::client::{ConfigTemplateEntry, OnboardSectionEntry, RpcClient};
 use crate::theme;
-use crate::widgets::{BANNER_HEIGHT, Banner};
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
-
-// ── Top-level entry point ────────────────────────────────────────
 
 pub async fn run(rpc: &RpcClient) -> Result<()> {
     let mut term = init_terminal()?;
@@ -49,15 +42,34 @@ fn restore_terminal(term: &mut Term) -> Result<()> {
     Ok(())
 }
 
-// ── Screen enum ──────────────────────────────────────────────────
+// ── Screen stack ─────────────────────────────────────────────────
 
 enum Screen {
     SectionList,
+    TypeList {
+        section_idx: usize,
+    },
+    AliasList {
+        section_idx: usize,
+        /// For TypedFamilyMap: the family path (e.g. "providers.models.anthropic").
+        /// For OneTierAliasMap: the section key itself (e.g. "agents").
+        map_path: String,
+        breadcrumb: Vec<String>,
+    },
+    AliasCreate {
+        section_idx: usize,
+        map_path: String,
+        breadcrumb: Vec<String>,
+    },
     FieldList {
         section_idx: usize,
+        prefix: String,
+        breadcrumb: Vec<String>,
     },
     FieldEdit {
         section_idx: usize,
+        prefix: String,
+        breadcrumb: Vec<String>,
         field_idx: usize,
     },
 }
@@ -68,10 +80,22 @@ struct App<'a> {
     rpc: &'a RpcClient,
     screen: Screen,
     sections: Vec<OnboardSectionEntry>,
+    templates: Vec<ConfigTemplateEntry>,
     section_cursor: usize,
+    // Type list (TypedFamilyMap families)
+    types: Vec<ConfigTemplateEntry>,
+    type_cursor: usize,
+    // Alias list
+    aliases: Vec<String>,
+    alias_cursor: usize,
+    // Field list
     fields: Vec<ConfigFieldEntry>,
     field_cursor: usize,
+    // Edit state
     edit_buf: String,
+    // Enum/bool select state
+    select_cursor: usize,
+    select_items: Vec<String>,
     status_msg: Option<String>,
 }
 
@@ -81,16 +105,24 @@ impl<'a> App<'a> {
             rpc,
             screen: Screen::SectionList,
             sections: Vec::new(),
+            templates: Vec::new(),
             section_cursor: 0,
+            types: Vec::new(),
+            type_cursor: 0,
+            aliases: Vec::new(),
+            alias_cursor: 0,
             fields: Vec::new(),
             field_cursor: 0,
             edit_buf: String::new(),
+            select_cursor: 0,
+            select_items: Vec::new(),
             status_msg: None,
         }
     }
 
     async fn run(&mut self, term: &mut Term) -> Result<()> {
-        self.load_sections().await?;
+        self.sections = self.rpc.onboard_sections().await?;
+        self.templates = self.rpc.config_templates().await?;
 
         loop {
             self.draw(term)?;
@@ -102,38 +134,45 @@ impl<'a> App<'a> {
 
             match &self.screen {
                 Screen::SectionList => {
-                    if self.handle_section_list_key(key).await? {
+                    if self.handle_section_list(key).await? {
                         return Ok(());
                     }
                 }
-                Screen::FieldList { .. } => {
-                    self.handle_field_list_key(key).await?;
-                }
-                Screen::FieldEdit { .. } => {
-                    self.handle_field_edit_key(key).await?;
-                }
+                Screen::TypeList { .. } => self.handle_type_list(key).await?,
+                Screen::AliasList { .. } => self.handle_alias_list(key).await?,
+                Screen::AliasCreate { .. } => self.handle_alias_create(key).await?,
+                Screen::FieldList { .. } => self.handle_field_list(key).await?,
+                Screen::FieldEdit { .. } => self.handle_field_edit(key).await?,
             }
         }
     }
 
     // ── Data loading ─────────────────────────────────────────────
 
-    async fn load_sections(&mut self) -> Result<()> {
-        self.sections = self.rpc.onboard_sections().await?;
+    fn types_for_section(&self, section_key: &str) -> Vec<ConfigTemplateEntry> {
+        let prefix = format!("{}.", section_key);
+        self.templates
+            .iter()
+            .filter(|t| t.path.starts_with(&prefix))
+            .cloned()
+            .collect()
+    }
+
+    async fn load_aliases(&mut self, map_path: &str) -> Result<()> {
+        self.aliases = self.rpc.config_map_keys(map_path).await?;
+        self.alias_cursor = 0;
         Ok(())
     }
 
-    async fn load_fields_for_section(&mut self, section_idx: usize) -> Result<()> {
-        let section = &self.sections[section_idx];
-        self.fields = self.rpc.config_list(Some(&section.key)).await?;
+    async fn load_fields(&mut self, prefix: &str) -> Result<()> {
+        self.fields = self.rpc.config_list(Some(prefix)).await?;
         self.field_cursor = 0;
         Ok(())
     }
 
-    // ── Key handling ─────────────────────────────────────────────
+    // ── Section list ─────────────────────────────────────────────
 
-    /// Returns `true` if the app should exit.
-    async fn handle_section_list_key(&mut self, key: KeyEvent) -> Result<bool> {
+    async fn handle_section_list(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Up | KeyCode::Char('k') => {
@@ -145,10 +184,35 @@ impl<'a> App<'a> {
                 }
             }
             KeyCode::Enter => {
-                if !self.sections.is_empty() {
+                if let Some(section) = self.sections.get(self.section_cursor) {
                     let idx = self.section_cursor;
-                    self.load_fields_for_section(idx).await?;
-                    self.screen = Screen::FieldList { section_idx: idx };
+                    let section_key = section.key.clone();
+                    match section.shape {
+                        Some(SectionShape::TypedFamilyMap) => {
+                            self.types = self.types_for_section(&section_key);
+                            self.type_cursor = 0;
+                            self.screen = Screen::TypeList { section_idx: idx };
+                        }
+                        Some(SectionShape::OneTierAliasMap) => {
+                            self.load_aliases(&section_key).await?;
+                            self.screen = Screen::AliasList {
+                                section_idx: idx,
+                                map_path: section_key.clone(),
+                                breadcrumb: vec![section_key],
+                            };
+                        }
+                        Some(SectionShape::DirectForm)
+                        | Some(SectionShape::BackendPicker)
+                        | None => {
+                            self.load_fields(&section_key).await?;
+                            self.screen = Screen::FieldList {
+                                section_idx: idx,
+                                prefix: section_key.clone(),
+                                breadcrumb: vec![section_key],
+                            };
+                        }
+                    }
+                    self.status_msg = None;
                 }
             }
             _ => {}
@@ -156,10 +220,237 @@ impl<'a> App<'a> {
         Ok(false)
     }
 
-    async fn handle_field_list_key(&mut self, key: KeyEvent) -> Result<()> {
+    // ── Type list (TypedFamilyMap) ───────────────────────────────
+
+    async fn handle_type_list(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.screen = Screen::SectionList;
+                self.status_msg = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.type_cursor = self.type_cursor.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.type_cursor + 1 < self.types.len() {
+                    self.type_cursor += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let (Some(tmpl), Screen::TypeList { section_idx }) =
+                    (self.types.get(self.type_cursor), &self.screen)
+                {
+                    let section_idx = *section_idx;
+                    let map_path = tmpl.path.clone();
+                    let type_name = map_path.rsplit('.').next().unwrap_or(&map_path).to_string();
+                    let section_key = self.sections[section_idx].key.clone();
+                    self.load_aliases(&map_path).await?;
+                    self.screen = Screen::AliasList {
+                        section_idx,
+                        map_path,
+                        breadcrumb: vec![section_key, type_name],
+                    };
+                    self.status_msg = None;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    // ── Alias list ───────────────────────────────────────────────
+
+    async fn handle_alias_list(&mut self, key: KeyEvent) -> Result<()> {
+        // Extra item at end for [+ Add]
+        let add_idx = self.aliases.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                let screen = std::mem::replace(&mut self.screen, Screen::SectionList);
+                if let Screen::AliasList {
+                    section_idx,
+                    breadcrumb,
+                    ..
+                } = screen
+                {
+                    // If breadcrumb has 2+ segments, we came from TypeList
+                    if breadcrumb.len() >= 2 {
+                        self.types = self.types_for_section(&self.sections[section_idx].key);
+                        self.screen = Screen::TypeList { section_idx };
+                    }
+                    // Otherwise go back to SectionList (already set)
+                }
+                self.status_msg = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.alias_cursor = self.alias_cursor.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.alias_cursor + 1 <= add_idx {
+                    self.alias_cursor += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if self.alias_cursor == add_idx {
+                    // [+ Add] — switch to alias creation prompt
+                    if let Screen::AliasList {
+                        section_idx,
+                        map_path,
+                        breadcrumb,
+                        ..
+                    } = &self.screen
+                    {
+                        self.edit_buf.clear();
+                        self.screen = Screen::AliasCreate {
+                            section_idx: *section_idx,
+                            map_path: map_path.clone(),
+                            breadcrumb: breadcrumb.clone(),
+                        };
+                    }
+                } else if let Some(alias) = self.aliases.get(self.alias_cursor) {
+                    if let Screen::AliasList {
+                        section_idx,
+                        map_path,
+                        breadcrumb,
+                        ..
+                    } = &self.screen
+                    {
+                        let prefix = format!("{}.{}", map_path, alias);
+                        let mut bc = breadcrumb.clone();
+                        bc.push(alias.clone());
+                        let si = *section_idx;
+                        self.load_fields(&prefix).await?;
+                        self.screen = Screen::FieldList {
+                            section_idx: si,
+                            prefix,
+                            breadcrumb: bc,
+                        };
+                        self.status_msg = None;
+                    }
+                }
+            }
+            KeyCode::Char('x') => {
+                if self.alias_cursor < self.aliases.len() {
+                    if let Screen::AliasList { map_path, .. } = &self.screen {
+                        let alias = self.aliases[self.alias_cursor].clone();
+                        let map_path = map_path.clone();
+                        match self.rpc.config_map_key_delete(&map_path, &alias).await {
+                            Ok(()) => {
+                                self.status_msg = Some(format!("Deleted {alias}"));
+                                self.load_aliases(&map_path).await?;
+                                if self.alias_cursor > 0 && self.alias_cursor >= self.aliases.len()
+                                {
+                                    self.alias_cursor = self.aliases.len().saturating_sub(1);
+                                }
+                            }
+                            Err(e) => self.status_msg = Some(format!("Delete failed: {e}")),
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    // ── Alias creation ───────────────────────────────────────────
+
+    async fn handle_alias_create(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                if let Screen::AliasCreate {
+                    section_idx,
+                    map_path,
+                    breadcrumb,
+                    ..
+                } = std::mem::replace(&mut self.screen, Screen::SectionList)
+                {
+                    self.load_aliases(&map_path).await?;
+                    self.screen = Screen::AliasList {
+                        section_idx,
+                        map_path,
+                        breadcrumb,
+                    };
+                }
+            }
+            KeyCode::Enter => {
+                let name = self.edit_buf.trim().to_string();
+                if name.is_empty() {
+                    self.status_msg = Some("Alias name cannot be empty".into());
+                    return Ok(());
+                }
+                if let Screen::AliasCreate {
+                    section_idx,
+                    map_path,
+                    breadcrumb,
+                    ..
+                } = std::mem::replace(&mut self.screen, Screen::SectionList)
+                {
+                    match self.rpc.config_map_key_create(&map_path, &name).await {
+                        Ok(()) => {
+                            let prefix = format!("{}.{}", map_path, name);
+                            let mut bc = breadcrumb;
+                            bc.push(name);
+                            self.load_fields(&prefix).await?;
+                            self.screen = Screen::FieldList {
+                                section_idx,
+                                prefix,
+                                breadcrumb: bc,
+                            };
+                            self.status_msg = None;
+                        }
+                        Err(e) => {
+                            self.status_msg = Some(format!("Create failed: {e}"));
+                            self.load_aliases(&map_path).await?;
+                            self.screen = Screen::AliasList {
+                                section_idx,
+                                map_path,
+                                breadcrumb,
+                            };
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.edit_buf.pop();
+            }
+            KeyCode::Char(c) => {
+                self.edit_buf.push(c);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    // ── Field list ───────────────────────────────────────────────
+
+    async fn handle_field_list(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                let screen = std::mem::replace(&mut self.screen, Screen::SectionList);
+                if let Screen::FieldList {
+                    section_idx,
+                    breadcrumb,
+                    ..
+                } = screen
+                {
+                    if breadcrumb.len() >= 2 {
+                        let mut bc = breadcrumb;
+                        bc.pop();
+                        let section_key = &self.sections[section_idx].key;
+                        let map_path = if bc.len() == 1 {
+                            section_key.clone()
+                        } else {
+                            format!("{}.{}", section_key, bc[1..].join("."))
+                        };
+                        self.load_aliases(&map_path).await?;
+                        self.screen = Screen::AliasList {
+                            section_idx,
+                            map_path,
+                            breadcrumb: bc,
+                        };
+                    }
+                    // len == 1 means DirectForm/BackendPicker → SectionList (already set)
+                }
                 self.status_msg = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -171,37 +462,41 @@ impl<'a> App<'a> {
                 }
             }
             KeyCode::Enter => {
-                if !self.fields.is_empty() {
-                    let field = &self.fields[self.field_cursor];
-                    if field.is_secret {
+                if self.field_cursor < self.fields.len() {
+                    if self.fields[self.field_cursor].is_secret {
                         self.status_msg = Some("Secret fields cannot be edited in the TUI".into());
                     } else {
-                        self.edit_buf = field
-                            .value
-                            .as_ref()
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if let Screen::FieldList { section_idx } = self.screen {
+                        let idx = self.field_cursor;
+                        self.prepare_edit_at(idx);
+                        if let Screen::FieldList {
+                            section_idx,
+                            prefix,
+                            breadcrumb,
+                            ..
+                        } = &self.screen
+                        {
                             self.screen = Screen::FieldEdit {
-                                section_idx,
-                                field_idx: self.field_cursor,
+                                section_idx: *section_idx,
+                                prefix: prefix.clone(),
+                                breadcrumb: breadcrumb.clone(),
+                                field_idx: idx,
                             };
                         }
                     }
                 }
             }
             KeyCode::Char('d') => {
-                if !self.fields.is_empty() {
-                    let prop = self.fields[self.field_cursor].path.clone();
-                    match self.rpc.config_delete(&prop).await {
-                        Ok(()) => {
-                            self.status_msg = Some(format!("Reset {prop}"));
-                            if let Screen::FieldList { section_idx } = self.screen {
-                                self.load_fields_for_section(section_idx).await?;
+                if let Some(field) = self.fields.get(self.field_cursor) {
+                    let prop = field.path.clone();
+                    if let Screen::FieldList { prefix, .. } = &self.screen {
+                        let prefix = prefix.clone();
+                        match self.rpc.config_delete(&prop).await {
+                            Ok(()) => {
+                                self.status_msg = Some(format!("Reset {prop}"));
+                                self.load_fields(&prefix).await?;
                             }
+                            Err(e) => self.status_msg = Some(format!("Delete failed: {e}")),
                         }
-                        Err(e) => self.status_msg = Some(format!("Delete failed: {e}")),
                     }
                 }
             }
@@ -210,26 +505,66 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    async fn handle_field_edit_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc => {
-                if let Screen::FieldEdit { section_idx, .. } = self.screen {
-                    self.screen = Screen::FieldList { section_idx };
-                }
+    fn prepare_edit_at(&mut self, idx: usize) {
+        let kind = self.fields[idx].kind;
+        let value = self.fields[idx]
+            .value
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let variants = self.fields[idx].enum_variants.clone();
+
+        match kind {
+            PropKind::Bool => {
+                self.select_items = vec!["true".into(), "false".into()];
+                self.select_cursor = match value.as_deref() {
+                    Some("true") => 0,
+                    Some("false") => 1,
+                    _ => 0,
+                };
             }
+            PropKind::Enum => {
+                self.select_items = variants;
+                let current = value.as_deref().unwrap_or("");
+                self.select_cursor = self
+                    .select_items
+                    .iter()
+                    .position(|v| v == current)
+                    .unwrap_or(0);
+            }
+            _ => {
+                self.select_items.clear();
+                self.edit_buf = value.unwrap_or_default();
+            }
+        }
+    }
+
+    fn is_select_edit(&self) -> bool {
+        !self.select_items.is_empty()
+    }
+
+    // ── Field edit ───────────────────────────────────────────────
+
+    async fn handle_field_edit(&mut self, key: KeyEvent) -> Result<()> {
+        if self.is_select_edit() {
+            return self.handle_select_edit(key).await;
+        }
+        match key.code {
+            KeyCode::Esc => self.pop_to_field_list().await?,
             KeyCode::Enter => {
                 if let Screen::FieldEdit {
-                    section_idx,
-                    field_idx,
-                } = self.screen
+                    prefix, field_idx, ..
+                } = &self.screen
                 {
-                    let prop = self.fields[field_idx].path.clone();
+                    let field = &self.fields[*field_idx];
+                    let prop = field.path.clone();
                     let value = serde_json::Value::String(self.edit_buf.clone());
+                    let prefix = prefix.clone();
                     match self.rpc.config_set(&prop, value).await {
                         Ok(()) => {
                             self.status_msg = Some(format!("Set {prop}"));
-                            self.load_fields_for_section(section_idx).await?;
-                            self.screen = Screen::FieldList { section_idx };
+                            self.load_fields(&prefix).await?;
+                            self.pop_to_field_list_keep_cursor().await?;
                         }
                         Err(e) => self.status_msg = Some(format!("Set failed: {e}")),
                     }
@@ -246,6 +581,77 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    async fn handle_select_edit(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => self.pop_to_field_list().await?,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.select_cursor = self.select_cursor.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.select_cursor + 1 < self.select_items.len() {
+                    self.select_cursor += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(chosen) = self.select_items.get(self.select_cursor) {
+                    if let Screen::FieldEdit {
+                        prefix, field_idx, ..
+                    } = &self.screen
+                    {
+                        let prop = self.fields[*field_idx].path.clone();
+                        let value = serde_json::Value::String(chosen.clone());
+                        let prefix = prefix.clone();
+                        match self.rpc.config_set(&prop, value).await {
+                            Ok(()) => {
+                                self.status_msg = Some(format!("Set {prop}"));
+                                self.load_fields(&prefix).await?;
+                                self.pop_to_field_list_keep_cursor().await?;
+                            }
+                            Err(e) => self.status_msg = Some(format!("Set failed: {e}")),
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn pop_to_field_list(&mut self) -> Result<()> {
+        if let Screen::FieldEdit {
+            section_idx,
+            prefix,
+            breadcrumb,
+            ..
+        } = std::mem::replace(&mut self.screen, Screen::SectionList)
+        {
+            self.screen = Screen::FieldList {
+                section_idx,
+                prefix,
+                breadcrumb,
+            };
+        }
+        Ok(())
+    }
+
+    async fn pop_to_field_list_keep_cursor(&mut self) -> Result<()> {
+        if let Screen::FieldEdit {
+            section_idx,
+            prefix,
+            breadcrumb,
+            field_idx,
+        } = std::mem::replace(&mut self.screen, Screen::SectionList)
+        {
+            self.field_cursor = field_idx.min(self.fields.len().saturating_sub(1));
+            self.screen = Screen::FieldList {
+                section_idx,
+                prefix,
+                breadcrumb,
+            };
+        }
+        Ok(())
+    }
+
     // ── Drawing ──────────────────────────────────────────────────
 
     fn draw(&mut self, term: &mut Term) -> Result<()> {
@@ -253,17 +659,32 @@ impl<'a> App<'a> {
             let area = frame.area();
             match &self.screen {
                 Screen::SectionList => self.draw_section_list(frame, area),
-                Screen::FieldList { section_idx } => {
-                    let idx = *section_idx;
-                    self.draw_field_list(frame, area, idx);
+                Screen::TypeList { section_idx } => {
+                    self.draw_type_list(frame, area, *section_idx);
+                }
+                Screen::AliasList {
+                    section_idx,
+                    breadcrumb,
+                    ..
+                } => {
+                    self.draw_alias_list(frame, area, *section_idx, breadcrumb);
+                }
+                Screen::AliasCreate { breadcrumb, .. } => {
+                    self.draw_alias_create(frame, area, breadcrumb);
+                }
+                Screen::FieldList {
+                    section_idx,
+                    breadcrumb,
+                    ..
+                } => {
+                    self.draw_field_list(frame, area, *section_idx, breadcrumb);
                 }
                 Screen::FieldEdit {
-                    section_idx,
+                    breadcrumb,
                     field_idx,
+                    ..
                 } => {
-                    let si = *section_idx;
-                    let fi = *field_idx;
-                    self.draw_field_edit(frame, area, si, fi);
+                    self.draw_field_edit(frame, area, breadcrumb, *field_idx);
                 }
             }
         })?;
@@ -271,21 +692,16 @@ impl<'a> App<'a> {
     }
 
     fn draw_section_list(&self, frame: &mut Frame, area: Rect) {
-        let chunks = main_layout(area);
+        let r = regions(area);
 
-        if chunks.banner.height > 0 {
-            frame.render_widget(Banner, chunks.banner);
-        }
+        render_breadcrumb(frame, r.breadcrumb, &["Config"]);
 
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("ZeroClaw Config Manager", theme::heading_style()),
-                Span::styled(
-                    format!("  (v{})", self.rpc.server_version),
-                    theme::dim_style(),
-                ),
-            ])),
-            chunks.breadcrumb,
+            Paragraph::new(Span::styled(
+                format!("ZeroClaw v{}", self.rpc.server_version),
+                theme::dim_style(),
+            )),
+            r.help,
         );
 
         let items: Vec<ListItem> = self
@@ -293,8 +709,10 @@ impl<'a> App<'a> {
             .iter()
             .map(|s| {
                 let badge = if s.completed { " ✓" } else { "" };
-                let label = format!("{}{}", s.label, badge,);
-                ListItem::new(Line::from(Span::styled(label, theme::body_style())))
+                ListItem::new(Line::from(Span::styled(
+                    format!("{}{badge}", s.label),
+                    theme::body_style(),
+                )))
             })
             .collect();
 
@@ -306,35 +724,158 @@ impl<'a> App<'a> {
                 .block(Block::default().borders(Borders::ALL).title(" Sections "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
-            chunks.main,
+            r.main,
             &mut state,
         );
 
-        let hints = "↑↓/jk=navigate  Enter=open  q=quit";
-        self.draw_status_and_hints(frame, chunks.status, chunks.hints, hints);
+        self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=open  q=quit");
     }
 
-    fn draw_field_list(&self, frame: &mut Frame, area: Rect, section_idx: usize) {
-        let chunks = main_layout(area);
+    fn draw_type_list(&self, frame: &mut Frame, area: Rect, section_idx: usize) {
+        let r = regions(area);
         let section = &self.sections[section_idx];
 
-        if chunks.banner.height > 0 {
-            frame.render_widget(Banner, chunks.banner);
-        }
+        render_breadcrumb(frame, r.breadcrumb, &["Config", &section.label]);
 
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Config", theme::heading_style()),
-                Span::styled("  ›  ", theme::dim_style()),
-                Span::styled(&section.label, theme::accent_style()),
-            ])),
-            chunks.breadcrumb,
+            Paragraph::new(Span::styled(&section.help, theme::dim_style()))
+                .wrap(Wrap { trim: false }),
+            r.help,
         );
+
+        let items: Vec<ListItem> = self
+            .types
+            .iter()
+            .map(|t| {
+                let name = t.path.rsplit('.').next().unwrap_or(&t.path);
+                ListItem::new(Line::from(Span::styled(
+                    name.to_string(),
+                    theme::body_style(),
+                )))
+            })
+            .collect();
+
+        let mut state = ListState::default();
+        state.select(Some(self.type_cursor));
+
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" {} ", section.label)),
+                )
+                .highlight_style(theme::selected_style())
+                .highlight_symbol("› "),
+            r.main,
+            &mut state,
+        );
+
+        self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=open  Esc=back");
+    }
+
+    fn draw_alias_list(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        section_idx: usize,
+        breadcrumb: &[String],
+    ) {
+        let r = regions(area);
+        let section = &self.sections[section_idx];
+
+        let bc: Vec<&str> = std::iter::once("Config")
+            .chain(breadcrumb.iter().map(String::as_str))
+            .collect();
+        render_breadcrumb(frame, r.breadcrumb, &bc);
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(&section.help, theme::dim_style()))
+                .wrap(Wrap { trim: false }),
+            r.help,
+        );
+
+        let mut items: Vec<ListItem> = self
+            .aliases
+            .iter()
+            .map(|a| ListItem::new(Line::from(Span::styled(a.clone(), theme::body_style()))))
+            .collect();
+        items.push(ListItem::new(Line::from(Span::styled(
+            "[+ Add]",
+            theme::accent_style(),
+        ))));
+
+        let mut state = ListState::default();
+        state.select(Some(self.alias_cursor));
+
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(" Aliases "))
+                .highlight_style(theme::selected_style())
+                .highlight_symbol("› "),
+            r.main,
+            &mut state,
+        );
+
+        self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=open  x=delete  Esc=back");
+    }
+
+    fn draw_alias_create(&self, frame: &mut Frame, area: Rect, breadcrumb: &[String]) {
+        let r = regions(area);
+
+        let bc: Vec<&str> = std::iter::once("Config")
+            .chain(breadcrumb.iter().map(String::as_str))
+            .chain(std::iter::once("New"))
+            .collect();
+        render_breadcrumb(frame, r.breadcrumb, &bc);
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Enter a name for the new alias",
+                theme::dim_style(),
+            )),
+            r.help,
+        );
+
+        let input_display = format!("{}{}", self.edit_buf, "█");
+        let input = Paragraph::new(Line::from(Span::styled(
+            input_display,
+            theme::input_style(),
+        )))
+        .block(Block::default().borders(Borders::ALL).title(" Alias name "));
+        frame.render_widget(input, r.main);
+
+        self.draw_footer(frame, r, "Enter=create  Esc=cancel");
+    }
+
+    fn draw_field_list(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        _section_idx: usize,
+        breadcrumb: &[String],
+    ) {
+        let r = regions(area);
+
+        let bc: Vec<&str> = std::iter::once("Config")
+            .chain(breadcrumb.iter().map(String::as_str))
+            .collect();
+        render_breadcrumb(frame, r.breadcrumb, &bc);
+
+        // Show description of selected field
+        if let Some(field) = self.fields.get(self.field_cursor) {
+            frame.render_widget(
+                Paragraph::new(Span::styled(&field.description, theme::dim_style()))
+                    .wrap(Wrap { trim: false }),
+                r.help,
+            );
+        }
 
         let items: Vec<ListItem> = self
             .fields
             .iter()
             .map(|f| {
+                let short_name = f.path.rsplit('.').next().unwrap_or(&f.path);
                 let val_display = if f.is_secret {
                     "••••••".to_string()
                 } else {
@@ -348,8 +889,14 @@ impl<'a> App<'a> {
                 };
 
                 let env_marker = if f.is_env_overridden { " [env]" } else { "" };
-                let label = format!("{} = {}{}", f.path, val_display, env_marker);
-                ListItem::new(Line::from(Span::styled(label, theme::body_style())))
+                let line = format!("{short_name} = {val_display}{env_marker}");
+
+                let style = if f.populated {
+                    theme::body_style()
+                } else {
+                    theme::dim_style()
+                };
+                ListItem::new(Line::from(Span::styled(line, style)))
             })
             .collect();
 
@@ -360,94 +907,97 @@ impl<'a> App<'a> {
 
         frame.render_stateful_widget(
             List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!(" {} ", section.label)),
-                )
+                .block(Block::default().borders(Borders::ALL).title(" Fields "))
                 .highlight_style(theme::selected_style())
                 .highlight_symbol("› "),
-            chunks.main,
+            r.main,
             &mut state,
         );
 
-        // Show field description in help area.
-        if let Some(field) = self.fields.get(self.field_cursor) {
-            frame.render_widget(
-                Paragraph::new(Span::styled(&field.description, theme::dim_style()))
-                    .wrap(Wrap { trim: false }),
-                chunks.help,
-            );
-        }
-
-        let hints = "↑↓/jk=navigate  Enter=edit  d=reset  Esc=back";
-        self.draw_status_and_hints(frame, chunks.status, chunks.hints, hints);
+        self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=edit  d=reset  Esc=back");
     }
 
-    fn draw_field_edit(&self, frame: &mut Frame, area: Rect, section_idx: usize, field_idx: usize) {
-        let chunks = main_layout(area);
-        let section = &self.sections[section_idx];
+    fn draw_field_edit(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        breadcrumb: &[String],
+        field_idx: usize,
+    ) {
+        let r = regions(area);
         let field = &self.fields[field_idx];
+        let short_name = field.path.rsplit('.').next().unwrap_or(&field.path);
 
-        if chunks.banner.height > 0 {
-            frame.render_widget(Banner, chunks.banner);
-        }
-
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Config", theme::heading_style()),
-                Span::styled("  ›  ", theme::dim_style()),
-                Span::styled(&section.label, theme::accent_style()),
-                Span::styled("  ›  ", theme::dim_style()),
-                Span::styled(
-                    &field.path,
-                    theme::accent_style().add_modifier(Modifier::BOLD),
-                ),
-            ])),
-            chunks.breadcrumb,
-        );
+        let bc: Vec<&str> = std::iter::once("Config")
+            .chain(breadcrumb.iter().map(String::as_str))
+            .chain(std::iter::once(short_name))
+            .collect();
+        render_breadcrumb(frame, r.breadcrumb, &bc);
 
         frame.render_widget(
             Paragraph::new(Span::styled(&field.description, theme::dim_style()))
                 .wrap(Wrap { trim: false }),
-            chunks.help,
+            r.help,
         );
 
-        let kind_hint = format!("Type: {}", field.kind.wire_name());
-        let input_display = format!("{}{}", self.edit_buf, "█");
+        if self.is_select_edit() {
+            // Enum or Bool select
+            let items: Vec<ListItem> = self
+                .select_items
+                .iter()
+                .map(|v| ListItem::new(Line::from(Span::styled(v.clone(), theme::body_style()))))
+                .collect();
 
-        let input_block = Paragraph::new(vec![
-            Line::from(Span::styled(&kind_hint, theme::dim_style())),
-            Line::from(Span::styled(input_display, theme::input_style())),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", field.path)),
-        );
+            let mut state = ListState::default();
+            state.select(Some(self.select_cursor));
 
-        frame.render_widget(input_block, chunks.main);
+            let title = match field.kind {
+                PropKind::Bool => format!(" {short_name} (toggle) "),
+                PropKind::Enum => format!(" {short_name} (select) "),
+                _ => format!(" {short_name} "),
+            };
 
-        let hints = "Enter=save  Esc=cancel";
-        self.draw_status_and_hints(frame, chunks.status, chunks.hints, hints);
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(Block::default().borders(Borders::ALL).title(title))
+                    .highlight_style(theme::selected_style())
+                    .highlight_symbol("› "),
+                r.main,
+                &mut state,
+            );
+
+            self.draw_footer(frame, r, "↑↓/jk=navigate  Enter=save  Esc=cancel");
+        } else {
+            // Text input
+            let kind_hint = format!("Type: {}", field.kind.wire_name());
+            let input_display = format!("{}{}", self.edit_buf, "█");
+
+            let input = Paragraph::new(vec![
+                Line::from(Span::styled(&kind_hint, theme::dim_style())),
+                Line::from(Span::styled(input_display, theme::input_style())),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {short_name} ")),
+            );
+
+            frame.render_widget(input, r.main);
+
+            self.draw_footer(frame, r, "Enter=save  Esc=cancel");
+        }
     }
 
-    fn draw_status_and_hints(
-        &self,
-        frame: &mut Frame,
-        status_area: Rect,
-        hints_area: Rect,
-        hints: &str,
-    ) {
+    fn draw_footer(&self, frame: &mut Frame, r: Regions, hints: &str) {
         if let Some(msg) = &self.status_msg {
             frame.render_widget(
                 Paragraph::new(Span::styled(msg.as_str(), theme::warn_style())),
-                status_area,
+                r.status,
             );
         }
         frame.render_widget(
             Paragraph::new(Span::styled(hints, theme::dim_style())),
-            hints_area,
+            r.hints,
         );
     }
 }
@@ -455,7 +1005,6 @@ impl<'a> App<'a> {
 // ── Layout ───────────────────────────────────────────────────────
 
 struct Regions {
-    banner: Rect,
     breadcrumb: Rect,
     help: Rect,
     main: Rect,
@@ -463,33 +1012,41 @@ struct Regions {
     hints: Rect,
 }
 
-fn main_layout(area: Rect) -> Regions {
-    let banner_rows = if area.height >= BANNER_HEIGHT + 10 {
-        BANNER_HEIGHT
-    } else {
-        0
-    };
-
+fn regions(area: Rect) -> Regions {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(banner_rows), // banner
-            Constraint::Length(1),           // breadcrumb
-            Constraint::Length(2),           // help
-            Constraint::Min(4),              // main list/editor
-            Constraint::Length(1),           // status
-            Constraint::Length(1),           // hints
+            Constraint::Length(1), // breadcrumb
+            Constraint::Length(2), // help
+            Constraint::Min(4),    // main
+            Constraint::Length(1), // status
+            Constraint::Length(1), // hints
         ])
         .split(area);
 
     Regions {
-        banner: chunks[0],
-        breadcrumb: chunks[1],
-        help: chunks[2],
-        main: chunks[3],
-        status: chunks[4],
-        hints: chunks[5],
+        breadcrumb: chunks[0],
+        help: chunks[1],
+        main: chunks[2],
+        status: chunks[3],
+        hints: chunks[4],
     }
+}
+
+fn render_breadcrumb(frame: &mut Frame, area: Rect, segments: &[&str]) {
+    let mut spans: Vec<Span<'_>> = Vec::new();
+    for (i, seg) in segments.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ›  ", theme::dim_style()));
+        }
+        let style = if i == segments.len() - 1 {
+            theme::accent_style().add_modifier(Modifier::BOLD)
+        } else {
+            theme::heading_style()
+        };
+        spans.push(Span::styled(seg.to_string(), style));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 // ── Input ────────────────────────────────────────────────────────
@@ -505,6 +1062,5 @@ fn wait_key() -> Result<Option<KeyEvent>> {
             }
             return Ok(Some(key));
         }
-        // Resize events trigger a redraw automatically via the next loop iteration.
     }
 }

@@ -14,7 +14,8 @@ use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
 use zeroclaw_api::jsonrpc::{self, JsonRpcError, RpcOutbound, field};
-use zeroclaw_config::traits::ConfigFieldEntry;
+use zeroclaw_config::sections::SectionShape;
+use zeroclaw_config::traits::{ConfigFieldEntry, MapKeyKind};
 
 // ── Wire method names used by the TUI ────────────────────────────
 
@@ -259,7 +260,7 @@ pub struct OnboardSectionEntry {
     pub has_picker: bool,
     pub completed: bool,
     #[serde(default)]
-    pub shape: Option<String>,
+    pub shape: Option<SectionShape>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -272,7 +273,7 @@ pub struct ConfigTemplatesResult {
 #[serde(rename_all = "snake_case")]
 pub struct ConfigTemplateEntry {
     pub path: String,
-    pub kind: String,
+    pub kind: MapKeyKind,
     pub value_type: String,
     pub description: String,
 }
