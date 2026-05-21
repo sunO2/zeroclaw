@@ -23,11 +23,15 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
+pub use zeroclaw_api::jsonrpc::RpcOutbound;
+use zeroclaw_api::jsonrpc::error_codes::*;
+use zeroclaw_api::jsonrpc::{
+    ACP_PROTOCOL_VERSION, JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+};
 use zeroclaw_api::model_provider::ConversationMessage;
 use zeroclaw_config::schema::Config;
 use zeroclaw_infra::acp_session_store::AcpSessionStore;
@@ -53,218 +57,6 @@ impl Default for AcpServerConfig {
             max_sessions: 10,
             session_timeout_secs: 3600,
         }
-    }
-}
-
-// ── JSON-RPC types ───────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
-    jsonrpc: String,
-    method: String,
-    #[serde(default)]
-    params: Value,
-    id: Option<Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcResponse {
-    jsonrpc: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<JsonRpcError>,
-    id: Value,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcNotification {
-    jsonrpc: &'static str,
-    method: &'static str,
-    params: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcError {
-    pub code: i32,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
-}
-
-// Standard JSON-RPC error codes
-const PARSE_ERROR: i32 = -32700;
-const INVALID_REQUEST: i32 = -32600;
-const METHOD_NOT_FOUND: i32 = -32601;
-const INVALID_PARAMS: i32 = -32602;
-const INTERNAL_ERROR: i32 = -32603;
-
-// Custom error codes
-const SESSION_NOT_FOUND: i32 = -32000;
-const SESSION_LIMIT_REACHED: i32 = -32001;
-const SESSION_BUSY: i32 = -32002;
-const ACP_PROTOCOL_VERSION: u64 = 1;
-
-// ── Outbound JSON-RPC plumbing ───────────────────────────────────
-
-/// A pending outbound JSON-RPC call, awaiting a response from the client.
-type PendingResponder = oneshot::Sender<std::result::Result<Value, JsonRpcError>>;
-
-/// Writer + outbound-call tracker shared between the server loop and
-/// per-session bridges (e.g. [`AcpChannel`]).
-///
-/// All stdout writes go through `writer_tx` so concurrent notifications and
-/// outbound requests can't interleave bytes. Outbound requests get string ids
-/// (`zc-out-<n>`) that are disjoint from any client-issued id space.
-pub struct RpcOutbound {
-    writer_tx: mpsc::Sender<String>,
-    pending: std::sync::Mutex<HashMap<String, PendingResponder>>,
-    next_id: AtomicU64,
-}
-
-struct PendingRequestGuard<'a> {
-    pending: &'a std::sync::Mutex<HashMap<String, PendingResponder>>,
-    id: String,
-}
-
-impl Drop for PendingRequestGuard<'_> {
-    fn drop(&mut self) {
-        self.pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
-    }
-}
-
-impl RpcOutbound {
-    fn new(writer_tx: mpsc::Sender<String>) -> Self {
-        Self {
-            writer_tx,
-            pending: std::sync::Mutex::new(HashMap::new()),
-            next_id: AtomicU64::new(0),
-        }
-    }
-
-    /// Send a JSON-RPC notification (no `id`, no response expected).
-    pub async fn notify(&self, method: &str, params: Value) {
-        let n = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        });
-        if let Ok(s) = serde_json::to_string(&n)
-            && self.writer_tx.send(s).await.is_err()
-        {
-            ::zeroclaw_log::record!(
-                WARN,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
-                    .with_outcome(::zeroclaw_log::EventOutcome::Unknown),
-                "ACP writer task closed; dropping outbound notification"
-            );
-        }
-    }
-
-    /// Send a JSON-RPC request and await the response.
-    pub async fn request(
-        &self,
-        method: &str,
-        params: Value,
-    ) -> std::result::Result<Value, JsonRpcError> {
-        let n = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let id = format!("zc-out-{n}");
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            pending.insert(id.clone(), tx);
-        }
-        let _pending_guard = PendingRequestGuard {
-            pending: &self.pending,
-            id: id.clone(),
-        };
-        let req = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": id,
-        });
-        let body = match serde_json::to_string(&req) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(JsonRpcError {
-                    code: INTERNAL_ERROR,
-                    message: format!("Failed to encode request: {e}"),
-                    data: None,
-                });
-            }
-        };
-        if self.writer_tx.send(body).await.is_err() {
-            return Err(JsonRpcError {
-                code: INTERNAL_ERROR,
-                message: "ACP writer task closed".to_string(),
-                data: None,
-            });
-        }
-        rx.await.unwrap_or_else(|_| {
-            Err(JsonRpcError {
-                code: INTERNAL_ERROR,
-                message: "Outbound RPC dropped".to_string(),
-                data: None,
-            })
-        })
-    }
-
-    /// Route an inbound JSON-RPC response (matched by `id`) to the
-    /// corresponding pending caller.
-    pub(crate) fn dispatch_response(
-        &self,
-        id_str: &str,
-        result: Option<Value>,
-        error: Option<JsonRpcError>,
-    ) {
-        let responder = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(id_str);
-        if let Some(tx) = responder {
-            let payload = if let Some(err) = error {
-                Err(err)
-            } else {
-                Ok(result.unwrap_or(Value::Null))
-            };
-            let _ = tx.send(payload);
-        } else {
-            ::zeroclaw_log::record!(
-                DEBUG,
-                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
-                    .with_attrs(::serde_json::json!({"id_str": id_str})),
-                "No pending outbound RPC matched response id="
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-impl RpcOutbound {
-    /// Test-only: build an `RpcOutbound` whose writer channel is provided by
-    /// the test (so outbound frames can be inspected without touching stdout).
-    pub fn for_testing(writer_tx: mpsc::Sender<String>) -> Self {
-        Self::new(writer_tx)
-    }
-
-    /// Test-only wrapper around `dispatch_response` so cross-module tests
-    /// (e.g. in `acp_channel`) can simulate inbound JSON-RPC responses.
-    pub fn dispatch_response_for_test(
-        &self,
-        id_str: &str,
-        result: Option<Value>,
-        error: Option<JsonRpcError>,
-    ) {
-        self.dispatch_response(id_str, result, error);
-    }
-
-    pub fn pending_count_for_test(&self) -> usize {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
@@ -1483,7 +1275,7 @@ impl AcpServer {
     async fn write_json<T: Serialize>(&self, value: &T) {
         match serde_json::to_string(value) {
             Ok(json) => {
-                if self.rpc.writer_tx.send(json).await.is_err() {
+                if !self.rpc.send_raw(json).await {
                     ::zeroclaw_log::record!(
                         ERROR,
                         ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
@@ -1908,7 +1700,7 @@ mod tests {
     #[tokio::test]
     async fn rpc_request_timeout_drop_removes_pending_responder() {
         let (tx, mut rx) = mpsc::channel::<String>(16);
-        let rpc = RpcOutbound::for_testing(tx);
+        let rpc = RpcOutbound::new(tx);
 
         let result = tokio::time::timeout(
             Duration::from_millis(10),
@@ -1918,7 +1710,7 @@ mod tests {
 
         assert!(result.is_err());
         assert!(rx.recv().await.is_some());
-        assert_eq!(rpc.pending_count_for_test(), 0);
+        assert_eq!(rpc.pending_count(), 0);
     }
 
     #[test]
