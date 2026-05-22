@@ -544,20 +544,18 @@ fn render_approval_overlay(f: &mut Frame, state: &ChatState, area: Rect) {
         None => return,
     };
 
+    // Anchor to the bottom of the given area.
+    const HEIGHT: u16 = 7;
     let vert = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Length(12),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Min(0), Constraint::Length(HEIGHT)])
         .split(area);
     let overlay_area = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(10),
+            Constraint::Percentage(5),
             Constraint::Min(60),
-            Constraint::Percentage(10),
+            Constraint::Percentage(5),
         ])
         .split(vert[1])[1];
 
@@ -569,10 +567,27 @@ fn render_approval_overlay(f: &mut Frame, state: &ChatState, area: Rect) {
     } else {
         "Enter=Allow  a=Always  Ctrl+D=Reject"
     };
-    let text = format!(
-        "Approve tool call: {}  [{}s]\n\n  {}\n\n  {keys}",
-        pa.tool_name, pa.timeout_secs, pa.arguments_summary
-    );
+
+    // For file_edit/file_write, strip the bulk content fields — the diff
+    // preview in the conversation already shows old/new content.
+    let summary = if is_edit_tool {
+        strip_content_fields(&pa.arguments_summary)
+    } else {
+        pa.arguments_summary.clone()
+    };
+
+    let text = if summary.is_empty() {
+        format!(
+            "Approve tool call: {}  [{}s]\n\n  {keys}",
+            pa.tool_name, pa.timeout_secs
+        )
+    } else {
+        format!(
+            "Approve tool call: {}  [{}s]\n\n  {summary}\n\n  {keys}",
+            pa.tool_name, pa.timeout_secs
+        )
+    };
+
     let p = Paragraph::new(text)
         .block(
             Block::default()
@@ -582,6 +597,23 @@ fn render_approval_overlay(f: &mut Frame, state: &ChatState, area: Rect) {
         )
         .wrap(Wrap { trim: true });
     f.render_widget(p, overlay_area);
+}
+
+/// Strip `old_string`, `new_string`, and `content` from an `arguments_summary`
+/// string (format: `"key: val, key: val, …"`) so the approval overlay stays
+/// compact when a diff preview is already shown in the conversation.
+fn strip_content_fields(summary: &str) -> String {
+    let mut s = summary;
+    for key in &["old_string", "new_string", "content"] {
+        // Key appears mid-string as ", key: …"
+        if let Some(i) = s.find(&format!(", {key}:")) {
+            s = &s[..i];
+        } else if s.starts_with(&format!("{key}:")) {
+            s = "";
+        }
+    }
+    s.trim_end_matches(|c: char| c == ',' || c == ' ')
+        .to_string()
 }
 
 // ── ChatState / ChatEntry ─────────────────────────────────────────
