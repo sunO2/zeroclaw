@@ -2267,7 +2267,7 @@ impl<'a> App<'a> {
         let has_tabs = !self.tab_names.is_empty();
 
         // Breadcrumb first, then optional tab bar, then the rest.
-        let r = regions(area);
+        let mut r = regions(area);
 
         let bc: Vec<&str> = std::iter::once("Config")
             .chain(breadcrumb.iter().map(String::as_str))
@@ -2281,6 +2281,7 @@ impl<'a> App<'a> {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(1), Constraint::Length(1)])
                 .split(r.help);
+            r.help = split[1];
             Some(split[0])
         } else {
             None
