@@ -2221,6 +2221,10 @@ pub async fn run_tool_call_loop(
                         Some(zeroclaw_api::channel::ChannelApprovalResponse::Deny) => {
                             ApprovalResponse::No
                         }
+                        Some(zeroclaw_api::channel::ChannelApprovalResponse::DenyWithEdit { .. }) => {
+                            // treat as deny — full handling deferred to Task 12 in agent.rs
+                            ApprovalResponse::No
+                        }
                         // Channel doesn't support approval — auto-deny.
                         None => ApprovalResponse::No,
                     }

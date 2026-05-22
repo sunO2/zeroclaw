@@ -1148,6 +1148,10 @@ impl Agent {
                     Some(zeroclaw_api::channel::ChannelApprovalResponse::Deny) => {
                         ApprovalResponse::No
                     }
+                    Some(zeroclaw_api::channel::ChannelApprovalResponse::DenyWithEdit { .. }) => {
+                        // conservative fallback until Task 12 wires ReplaceWith
+                        ApprovalResponse::No
+                    }
                     None => {
                         ::zeroclaw_log::record!(
                             WARN,
@@ -2324,7 +2328,7 @@ mod tests {
             _request: &zeroclaw_api::channel::ChannelApprovalRequest,
         ) -> anyhow::Result<Option<zeroclaw_api::channel::ChannelApprovalResponse>> {
             self.requests.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(self.response))
+            Ok(Some(self.response.clone()))
         }
     }
 

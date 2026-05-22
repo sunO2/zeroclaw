@@ -702,6 +702,7 @@ mod tests {
             ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
             ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
             ChannelApprovalResponse::Deny => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
         };
         assert_eq!(mapped, ApprovalResponse::Yes);
     }
@@ -713,6 +714,7 @@ mod tests {
             ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
             ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
             ChannelApprovalResponse::Deny => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
         };
         assert_eq!(mapped, ApprovalResponse::Always);
     }
@@ -724,6 +726,7 @@ mod tests {
             ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
             ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
             ChannelApprovalResponse::Deny => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
         };
         assert_eq!(mapped, ApprovalResponse::No);
     }
