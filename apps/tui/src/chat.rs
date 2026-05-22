@@ -403,6 +403,12 @@ fn render(f: &mut Frame, state: &ChatState, area: Rect) {
     }
 }
 
+/// Extract the file extension from the `"path"` field of a tool's input JSON.
+fn file_ext(input: &serde_json::Value) -> Option<&str> {
+    let path = input.get("path")?.as_str()?;
+    std::path::Path::new(path).extension()?.to_str()
+}
+
 fn render_tool_entry<'a>(
     lines: &mut Vec<Line<'a>>,
     name: &'a str,
@@ -423,11 +429,13 @@ fn render_tool_entry<'a>(
         "file_edit" => {
             let old = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
             let new = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
-            lines.extend(diff::diff_lines(old, new));
+            let ext = file_ext(input);
+            lines.extend(diff::diff_lines(old, new, ext));
         }
         "file_write" => {
             let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            lines.extend(diff::write_lines(content));
+            let ext = file_ext(input);
+            lines.extend(diff::write_lines(content, ext));
         }
         _ => {
             let summary = serde_json::to_string(input).unwrap_or_default();
