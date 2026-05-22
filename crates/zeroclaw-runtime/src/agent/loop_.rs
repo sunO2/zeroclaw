@@ -2221,9 +2221,8 @@ pub async fn run_tool_call_loop(
                         Some(zeroclaw_api::channel::ChannelApprovalResponse::Deny) => {
                             ApprovalResponse::No
                         }
-                        Some(zeroclaw_api::channel::ChannelApprovalResponse::DenyWithEdit { .. }) => {
-                            // treat as deny — full handling deferred to Task 12 in agent.rs
-                            ApprovalResponse::No
+                        Some(zeroclaw_api::channel::ChannelApprovalResponse::DenyWithEdit { replacement }) => {
+                            ApprovalResponse::ReplaceWith(replacement)
                         }
                         // Channel doesn't support approval — auto-deny.
                         None => ApprovalResponse::No,
@@ -2232,7 +2231,7 @@ pub async fn run_tool_call_loop(
                     mgr.prompt_cli(&request)
                 };
 
-                mgr.record_decision(&tool_name, &tool_args, decision, channel_name);
+                mgr.record_decision(&tool_name, &tool_args, &decision, channel_name);
 
                 if decision == ApprovalResponse::No {
                     let denied = "Denied by user.".to_string();
@@ -2265,6 +2264,29 @@ pub async fn run_tool_call_loop(
                             output: denied.clone(),
                             success: false,
                             error_reason: Some(denied),
+                            duration: Duration::ZERO,
+                            receipt: None,
+                        },
+                    ));
+                    continue;
+                }
+
+                if let ApprovalResponse::ReplaceWith(replacement) = &decision {
+                    if let Some(ref tx) = on_delta {
+                        let _ = tx
+                            .send(StreamDelta::Status(format!(
+                                "\u{270f} {}: replaced by user\n",
+                                tool_name
+                            )))
+                            .await;
+                    }
+                    ordered_results[idx] = Some((
+                        tool_name.clone(),
+                        call.tool_call_id.clone(),
+                        ToolExecutionOutcome {
+                            output: replacement.clone(),
+                            success: true,
+                            error_reason: None,
                             duration: Duration::ZERO,
                             receipt: None,
                         },

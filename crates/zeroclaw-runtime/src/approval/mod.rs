@@ -21,7 +21,7 @@ pub struct ApprovalRequest {
 }
 
 /// The user's response to an approval request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalResponse {
     /// Execute this one call.
@@ -30,6 +30,8 @@ pub enum ApprovalResponse {
     No,
     /// Execute and add tool to session-scoped allowlist.
     Always,
+    /// Skip execution; return this as the tool result instead.
+    ReplaceWith(String),
 }
 
 /// A single audit log entry for an approval decision.
@@ -194,11 +196,11 @@ impl ApprovalManager {
         &self,
         tool_name: &str,
         args: &serde_json::Value,
-        decision: ApprovalResponse,
+        decision: &ApprovalResponse,
         channel: &str,
     ) {
         // If "Always", add to session allowlist.
-        if decision == ApprovalResponse::Always {
+        if *decision == ApprovalResponse::Always {
             let mut allowlist = self.session_allowlist.lock();
             allowlist.insert(tool_name.to_string());
         }
@@ -209,7 +211,7 @@ impl ApprovalManager {
             timestamp: Utc::now().to_rfc3339(),
             tool_name: tool_name.to_string(),
             arguments_summary: summary,
-            decision,
+            decision: decision.clone(),
             channel: channel.to_string(),
         };
         let mut log = self.audit_log.lock();
@@ -404,7 +406,7 @@ mod tests {
         mgr.record_decision(
             "file_write",
             &serde_json::json!({"path": "test.txt"}),
-            ApprovalResponse::Always,
+            &ApprovalResponse::Always,
             "cli",
         );
 
@@ -420,7 +422,7 @@ mod tests {
         mgr.record_decision(
             "shell",
             &serde_json::json!({"command": "ls"}),
-            ApprovalResponse::Always,
+            &ApprovalResponse::Always,
             "cli",
         );
 
@@ -434,7 +436,7 @@ mod tests {
         mgr.record_decision(
             "file_write",
             &serde_json::json!({}),
-            ApprovalResponse::Yes,
+            &ApprovalResponse::Yes,
             "cli",
         );
         assert!(mgr.needs_approval("file_write"));
@@ -449,13 +451,13 @@ mod tests {
         mgr.record_decision(
             "shell",
             &serde_json::json!({"command": "rm -rf ./build/"}),
-            ApprovalResponse::No,
+            &ApprovalResponse::No,
             "cli",
         );
         mgr.record_decision(
             "file_write",
             &serde_json::json!({"path": "out.txt", "content": "hello"}),
-            ApprovalResponse::Yes,
+            &ApprovalResponse::Yes,
             "cli",
         );
 
@@ -473,7 +475,7 @@ mod tests {
         mgr.record_decision(
             "shell",
             &serde_json::json!({"command": "ls"}),
-            ApprovalResponse::Yes,
+            &ApprovalResponse::Yes,
             "telegram",
         );
 
@@ -600,7 +602,7 @@ mod tests {
         mgr.record_decision(
             "file_write",
             &serde_json::json!({"path": "test.txt"}),
-            ApprovalResponse::Always,
+            &ApprovalResponse::Always,
             "telegram",
         );
 
@@ -614,7 +616,7 @@ mod tests {
         mgr.record_decision(
             "shell",
             &serde_json::json!({"command": "ls"}),
-            ApprovalResponse::Always,
+            &ApprovalResponse::Always,
             "telegram",
         );
 
@@ -702,7 +704,9 @@ mod tests {
             ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
             ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
             ChannelApprovalResponse::Deny => ApprovalResponse::No,
-            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { replacement } => {
+                ApprovalResponse::ReplaceWith(replacement)
+            }
         };
         assert_eq!(mapped, ApprovalResponse::Yes);
     }
@@ -714,7 +718,9 @@ mod tests {
             ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
             ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
             ChannelApprovalResponse::Deny => ApprovalResponse::No,
-            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { replacement } => {
+                ApprovalResponse::ReplaceWith(replacement)
+            }
         };
         assert_eq!(mapped, ApprovalResponse::Always);
     }
@@ -726,21 +732,32 @@ mod tests {
             ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
             ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
             ChannelApprovalResponse::Deny => ApprovalResponse::No,
-            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { replacement } => {
+                ApprovalResponse::ReplaceWith(replacement)
+            }
         };
         assert_eq!(mapped, ApprovalResponse::No);
     }
 
     #[test]
-    fn channel_deny_with_edit_maps_to_no() {
+    fn channel_deny_with_edit_maps_to_replace_with() {
         use zeroclaw_api::channel::ChannelApprovalResponse;
         let mapped = match (ChannelApprovalResponse::DenyWithEdit { replacement: "x".to_string() }) {
             ChannelApprovalResponse::Approve => ApprovalResponse::Yes,
             ChannelApprovalResponse::AlwaysApprove => ApprovalResponse::Always,
             ChannelApprovalResponse::Deny => ApprovalResponse::No,
-            ChannelApprovalResponse::DenyWithEdit { .. } => ApprovalResponse::No,
+            ChannelApprovalResponse::DenyWithEdit { replacement } => {
+                ApprovalResponse::ReplaceWith(replacement)
+            }
         };
-        assert_eq!(mapped, ApprovalResponse::No);
+        assert!(matches!(mapped, ApprovalResponse::ReplaceWith(s) if s == "x"));
+    }
+
+    #[test]
+    fn replace_with_is_not_yes_or_no() {
+        let r = ApprovalResponse::ReplaceWith("new text".to_string());
+        assert_ne!(r, ApprovalResponse::Yes);
+        assert_ne!(r, ApprovalResponse::No);
     }
 
     #[test]

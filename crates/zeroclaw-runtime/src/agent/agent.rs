@@ -1148,9 +1148,8 @@ impl Agent {
                     Some(zeroclaw_api::channel::ChannelApprovalResponse::Deny) => {
                         ApprovalResponse::No
                     }
-                    Some(zeroclaw_api::channel::ChannelApprovalResponse::DenyWithEdit { .. }) => {
-                        // conservative fallback until Task 12 wires ReplaceWith
-                        ApprovalResponse::No
+                    Some(zeroclaw_api::channel::ChannelApprovalResponse::DenyWithEdit { replacement }) => {
+                        ApprovalResponse::ReplaceWith(replacement)
                     }
                     None => {
                         ::zeroclaw_log::record!(
@@ -1173,13 +1172,22 @@ impl Agent {
                 (mgr.prompt_cli(&request), String::new())
             };
 
-            mgr.record_decision(&tool_name, &tool_args, decision, &decision_channel);
+            mgr.record_decision(&tool_name, &tool_args, &decision, &decision_channel);
 
             if decision == ApprovalResponse::No {
                 return ToolExecutionResult {
                     name: tool_name,
                     output: "Denied by user.".to_string(),
                     success: false,
+                    tool_call_id: call.tool_call_id.clone(),
+                };
+            }
+
+            if let ApprovalResponse::ReplaceWith(replacement) = &decision {
+                return ToolExecutionResult {
+                    name: tool_name,
+                    output: replacement.clone(),
+                    success: true,
                     tool_call_id: call.tool_call_id.clone(),
                 };
             }
