@@ -49,6 +49,16 @@ fn severity_label(num: u8) -> &'static str {
     }
 }
 
+/// Recursively check whether any string value in a JSON tree contains `needle`.
+fn attr_values_contain(val: &Value, needle: &str) -> bool {
+    match val {
+        Value::String(s) => s.to_lowercase().contains(needle),
+        Value::Array(arr) => arr.iter().any(|v| attr_values_contain(v, needle)),
+        Value::Object(map) => map.values().any(|v| attr_values_contain(v, needle)),
+        _ => false,
+    }
+}
+
 // ── Log entry ────────────────────────────────────────────────────
 
 struct LogEntry {
@@ -147,6 +157,7 @@ impl LogEntry {
                 .zeroclaw
                 .values()
                 .any(|v| v.to_lowercase().contains(&q))
+            || attr_values_contain(&self.attributes, &q)
     }
 
     fn detail_lines(&self) -> Vec<Line<'static>> {
@@ -259,6 +270,7 @@ pub(crate) struct Logs<'a> {
     subscribed: bool,
     detail_open: bool,
     detail_scroll: u16,
+    detail_pct: u16,
     // Search
     search_active: bool,
     search_buf: String,
@@ -267,6 +279,8 @@ pub(crate) struct Logs<'a> {
     next_cursor: Option<(String, String)>,
     at_end: bool,
     loading: bool,
+    // Viewport
+    list_height: u16,
 }
 
 impl<'a> Logs<'a> {
@@ -281,12 +295,14 @@ impl<'a> Logs<'a> {
             subscribed: false,
             detail_open: false,
             detail_scroll: 0,
+            detail_pct: 50,
             search_active: false,
             search_buf: String::new(),
             search_query: String::new(),
             next_cursor: None,
             at_end: false,
             loading: false,
+            list_height: 0,
         }
     }
 
@@ -352,6 +368,53 @@ impl<'a> Logs<'a> {
         self.loading = false;
     }
 
+    /// Snapshot the raw event index and follow state the cursor
+    /// currently points at. Must be called *before* mutating filters.
+    fn cursor_anchor(&self) -> (Option<usize>, bool) {
+        (self.selected_event_idx(), self.follow)
+    }
+
+    /// Reset view state after a filter change. Keeps the in-memory
+    /// event buffer intact — `filtered_indices` handles the filtering.
+    /// Moves the cursor to the nearest match relative to `anchor`
+    /// (captured via `cursor_anchor()` before the filter was changed).
+    fn refilter(&mut self, anchor: (Option<usize>, bool)) {
+        let (prev_raw_idx, was_following) = anchor;
+
+        // Reset pagination so subsequent scroll-to-top loads can
+        // fetch history matching the new filter set.
+        self.next_cursor = None;
+        self.at_end = false;
+
+        let filtered = self.filtered_indices();
+        if filtered.is_empty() {
+            self.follow = false;
+            self.list_state.select(None);
+            return;
+        }
+
+        if was_following {
+            // Stay pinned to the newest matching event.
+            self.follow = true;
+            self.list_state.select(Some(filtered.len() - 1));
+        } else {
+            self.follow = false;
+            // Find the filtered position whose raw index is closest to
+            // where the cursor was.
+            let target = prev_raw_idx.unwrap_or(0);
+            let best_pos = filtered
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, raw)| (**raw as isize - target as isize).unsigned_abs())
+                .map(|(pos, _)| pos)
+                .unwrap_or(0);
+            self.list_state.select(Some(best_pos));
+            // Center the viewport on the selected item.
+            let half = (self.list_height as usize) / 2;
+            *self.list_state.offset_mut() = best_pos.saturating_sub(half);
+        }
+    }
+
     fn drain_notifications(&mut self) {
         loop {
             match self.notif_rx.try_recv() {
@@ -399,39 +462,28 @@ impl<'a> Logs<'a> {
             self.list_state.select(Some(filtered.len() - 1));
         }
 
-        // Layout: status bar (1) + optional search bar (1) + content
-        let has_search_bar = self.search_active || !self.search_query.is_empty();
-        let constraints = if has_search_bar {
-            vec![
+        // Layout: status bar (1) + filter bar (1) + content
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Min(0),
-            ]
-        } else {
-            vec![Constraint::Length(1), Constraint::Min(0)]
-        };
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(constraints)
+            ])
             .split(area);
 
         // Status bar
         let help = if self.search_active {
-            "Enter:search  Esc:cancel"
+            "Enter:apply  Esc:cancel"
         } else if self.detail_open {
-            "Esc:close  J/K:scroll detail  q:quit"
+            "Esc:close  /:search  +/-:sev  J/K:scroll detail  c:clear"
         } else {
-            "j/k:scroll  /:search  Enter:detail  +/-:sev  f:follow  q:quit"
+            "j/k:scroll  /:search  Enter:detail  +/-:sev  f:follow  c:clear"
         };
 
         let status = Line::from(vec![
             Span::styled(" Logs ", theme::title_style()),
             Span::styled(format!("({}) ", filtered.len()), theme::dim_style()),
-            Span::styled("Sev\u{2265}", theme::dim_style()),
-            Span::styled(
-                format!("{} ", severity_label(self.min_severity)),
-                severity_style(self.min_severity).add_modifier(Modifier::BOLD),
-            ),
             if self.follow {
                 Span::styled("[follow] ", theme::accent_style())
             } else {
@@ -453,32 +505,46 @@ impl<'a> Logs<'a> {
         ]);
         frame.render_widget(Paragraph::new(status), chunks[0]);
 
-        // Search bar
-        let content_chunk = if has_search_bar {
-            let search_line = if self.search_active {
-                Line::from(vec![
-                    Span::styled(" /", theme::accent_style()),
-                    Span::styled(&self.search_buf, theme::input_style()),
-                    Span::styled("\u{2588}", theme::accent_style()), // cursor block
-                ])
-            } else {
-                Line::from(vec![
-                    Span::styled(" filter: ", theme::dim_style()),
-                    Span::styled(&self.search_query, theme::body_style()),
-                    Span::styled("  (/ to edit, Esc to clear)", theme::dim_style()),
-                ])
-            };
-            frame.render_widget(Paragraph::new(search_line), chunks[1]);
-            chunks[2]
+        // Filter bar (always visible)
+        let filter_line = if self.search_active {
+            Line::from(vec![
+                Span::styled(" sev\u{2265}", theme::dim_style()),
+                Span::styled(
+                    format!("{} ", severity_label(self.min_severity)),
+                    severity_style(self.min_severity).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" /", theme::accent_style()),
+                Span::styled(&self.search_buf, theme::input_style()),
+                Span::styled("\u{2588}", theme::accent_style()),
+            ])
         } else {
-            chunks[1]
+            let mut spans = vec![
+                Span::styled(" sev\u{2265}", theme::dim_style()),
+                Span::styled(
+                    format!("{} ", severity_label(self.min_severity)),
+                    severity_style(self.min_severity).add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if !self.search_query.is_empty() {
+                spans.push(Span::styled(" search: ", theme::dim_style()));
+                spans.push(Span::styled(&self.search_query, theme::accent_style()));
+                spans.push(Span::styled("  (c:clear)", theme::dim_style()));
+            }
+            Line::from(spans)
         };
+        frame.render_widget(Paragraph::new(filter_line), chunks[1]);
+
+        let content_chunk = chunks[2];
 
         // Main content
         if self.detail_open {
+            let list_pct = 100u16.saturating_sub(self.detail_pct);
             let hsplit = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .constraints([
+                    Constraint::Percentage(list_pct),
+                    Constraint::Percentage(self.detail_pct),
+                ])
                 .split(content_chunk);
             self.draw_list(frame, hsplit[0], &filtered);
             self.draw_detail(frame, hsplit[1]);
@@ -488,6 +554,9 @@ impl<'a> Logs<'a> {
     }
 
     fn draw_list(&mut self, frame: &mut ratatui::Frame, area: Rect, filtered: &[usize]) {
+        // Track inner height (minus borders) for scroll centering.
+        self.list_height = area.height.saturating_sub(2);
+
         let items: Vec<ListItem> = filtered
             .iter()
             .map(|&idx| {
@@ -548,7 +617,7 @@ impl<'a> Logs<'a> {
             return self.handle_search_key(key).await;
         }
         if self.detail_open {
-            return self.handle_detail_key(key);
+            return self.handle_detail_key(key).await;
         }
         self.handle_normal_key(key).await
     }
@@ -556,13 +625,10 @@ impl<'a> Logs<'a> {
     async fn handle_search_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Enter => {
+                let anchor = self.cursor_anchor();
                 self.search_query = self.search_buf.clone();
                 self.search_active = false;
-                self.list_state.select(None);
-                self.follow = true;
-                // Re-query daemon with the search term
-                self.events.clear();
-                self.load_page(None).await;
+                self.refilter(anchor);
             }
             KeyCode::Esc => {
                 self.search_active = false;
@@ -579,14 +645,25 @@ impl<'a> Logs<'a> {
         false
     }
 
-    fn handle_detail_key(&mut self, key: KeyEvent) -> bool {
+    async fn handle_detail_key(&mut self, key: KeyEvent) -> bool {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
         match key.code {
-            KeyCode::Char('q') => return true,
             KeyCode::Esc | KeyCode::Enter => {
                 self.detail_open = false;
                 self.detail_scroll = 0;
+            }
+            KeyCode::Char('c') => {
+                if !self.search_query.is_empty() {
+                    let anchor = self.cursor_anchor();
+                    self.search_query.clear();
+                    self.search_buf.clear();
+                    self.refilter(anchor);
+                }
+            }
+            KeyCode::Char('/') => {
+                self.search_active = true;
+                self.search_buf = self.search_query.clone();
             }
             // Shift+J / Shift+K / Shift+Arrow scroll the detail pane
             KeyCode::Char('J') => self.detail_scroll = self.detail_scroll.saturating_add(1),
@@ -596,6 +673,22 @@ impl<'a> Logs<'a> {
             }
             KeyCode::Up if shift => {
                 self.detail_scroll = self.detail_scroll.saturating_sub(1);
+            }
+            KeyCode::Left if shift => {
+                self.detail_pct = (self.detail_pct + 5).min(80);
+            }
+            KeyCode::Right if shift => {
+                self.detail_pct = self.detail_pct.saturating_sub(5).max(20);
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                let anchor = self.cursor_anchor();
+                self.cycle_severity_up();
+                self.refilter(anchor);
+            }
+            KeyCode::Char('-') => {
+                let anchor = self.cursor_anchor();
+                self.cycle_severity_down();
+                self.refilter(anchor);
             }
             // j/k / plain arrows move the list cursor
             KeyCode::Char('j') | KeyCode::Down => {
@@ -615,17 +708,13 @@ impl<'a> Logs<'a> {
         let filtered_len = self.filtered_indices().len();
 
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                // If search is active, Esc clears it
+            KeyCode::Char('c') => {
                 if !self.search_query.is_empty() {
+                    let anchor = self.cursor_anchor();
                     self.search_query.clear();
                     self.search_buf.clear();
-                    self.events.clear();
-                    self.follow = true;
-                    self.load_page(None).await;
-                    return false;
+                    self.refilter(anchor);
                 }
-                return true;
             }
             KeyCode::Char('/') => {
                 self.search_active = true;
@@ -635,6 +724,7 @@ impl<'a> Logs<'a> {
                 if self.selected_event_idx().is_some() {
                     self.detail_open = true;
                     self.detail_scroll = 0;
+                    self.detail_pct = 50;
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_selection_down(),
@@ -654,8 +744,16 @@ impl<'a> Logs<'a> {
                 self.maybe_load_older().await;
             }
             KeyCode::Char('f') => self.follow = !self.follow,
-            KeyCode::Char('+') | KeyCode::Char('=') => self.cycle_severity_up(),
-            KeyCode::Char('-') => self.cycle_severity_down(),
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                let anchor = self.cursor_anchor();
+                self.cycle_severity_up();
+                self.refilter(anchor);
+            }
+            KeyCode::Char('-') => {
+                let anchor = self.cursor_anchor();
+                self.cycle_severity_down();
+                self.refilter(anchor);
+            }
             KeyCode::PageDown => {
                 self.follow = false;
                 let i = self.list_state.selected().unwrap_or(0);

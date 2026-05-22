@@ -79,13 +79,11 @@ pub async fn run(rpc: &RpcClient) -> Result<()> {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                let key = if key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
-                } else {
-                    key
-                };
+
+                // Ctrl+C always quits
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    break;
+                }
 
                 // Global keys: F1–F5 switch modes
                 match key.code {
