@@ -8,6 +8,7 @@ use clap::Parser;
 mod acp;
 mod app;
 mod chat;
+mod diff;
 mod client;
 mod config_manager;
 mod dashboard;

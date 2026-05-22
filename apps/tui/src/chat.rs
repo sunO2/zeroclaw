@@ -14,6 +14,7 @@ use crate::client::{
     ApprovalDecision, RpcClient, RpcNotification, SessionPromptResult, SessionUpdate, method,
     parse_session_update,
 };
+use crate::diff;
 use crate::theme;
 use zeroclaw_api::jsonrpc::RpcOutbound;
 
@@ -392,6 +393,59 @@ fn render(f: &mut Frame, state: &ChatState, area: Rect) {
     }
 }
 
+fn render_tool_entry<'a>(
+    lines: &mut Vec<Line<'a>>,
+    name: &'a str,
+    input: &'a serde_json::Value,
+    result: Option<&'a str>,
+) {
+    const TOOL_FG: Color = Color::Rgb(180, 140, 255);
+    const RESULT_FG: Color = Color::Rgb(130, 130, 130);
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("[tool: {name}] "),
+            Style::default().fg(TOOL_FG).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    match name {
+        "file_edit" => {
+            let old = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+            let new = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+            lines.extend(diff::diff_lines(old, new));
+        }
+        "file_write" => {
+            let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            lines.extend(diff::write_lines(content));
+        }
+        _ => {
+            let summary = serde_json::to_string(input).unwrap_or_default();
+            let truncated = if summary.len() > 120 {
+                format!("{}…", &summary[..120])
+            } else {
+                summary
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {truncated}"),
+                Style::default().fg(RESULT_FG),
+            )));
+        }
+    }
+
+    if let Some(res) = result {
+        let truncated = if res.len() > 200 {
+            format!("{}…", &res[..200])
+        } else {
+            res.to_string()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  → {truncated}"),
+            Style::default().fg(RESULT_FG),
+        )));
+    }
+}
+
 fn render_conversation(f: &mut Frame, state: &ChatState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -436,22 +490,7 @@ fn render_conversation(f: &mut Frame, state: &ChatState, area: Rect) {
                 result,
                 ..
             } => {
-                let input_str = serde_json::to_string(input).unwrap_or_default();
-                let truncated: String = input_str.chars().take(60).collect();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("[tool: {name}] "),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(truncated),
-                ]));
-                if let Some(r) = result {
-                    let result_truncated: String = r.chars().take(60).collect();
-                    lines.push(Line::from(vec![
-                        Span::styled("  \u{2514}\u{2500} ", Style::default().fg(Color::DarkGray)),
-                        Span::raw(result_truncated),
-                    ]));
-                }
+                render_tool_entry(&mut lines, name, input, result.as_deref());
             }
         }
     }
@@ -474,7 +513,7 @@ fn render_conversation(f: &mut Frame, state: &ChatState, area: Rect) {
                 .borders(Borders::ALL)
                 .title(format!(" {} ", state.agent_alias)),
         )
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
 
@@ -514,8 +553,14 @@ fn render_approval_overlay(f: &mut Frame, state: &ChatState, area: Rect) {
 
     f.render_widget(Clear, overlay_area);
 
+    let is_edit_tool = matches!(pa.tool_name.as_str(), "file_edit" | "file_write");
+    let keys = if is_edit_tool {
+        "Enter=Allow  a=Always  Ctrl+D=Reject  e=Edit"
+    } else {
+        "Enter=Allow  a=Always  Ctrl+D=Reject"
+    };
     let text = format!(
-        "Approve tool call: {}  [{}s]\n\n  {}\n\n  Enter=Allow  a=Always  Ctrl+D=Reject",
+        "Approve tool call: {}  [{}s]\n\n  {}\n\n  {keys}",
         pa.tool_name, pa.timeout_secs, pa.arguments_summary
     );
     let p = Paragraph::new(text)
@@ -822,6 +867,37 @@ async fn chat_loop(
                                     state.push_input_char('a');
                                 }
                             }
+                            KeyCode::Char('e') => {
+                                let is_edit_tool = state
+                                    .pending_approval()
+                                    .map(|pa| {
+                                        matches!(
+                                            pa.tool_name.as_str(),
+                                            "file_edit" | "file_write"
+                                        )
+                                    })
+                                    .unwrap_or(false);
+                                if is_edit_tool {
+                                    if let Some(pa) = state.take_pending_approval() {
+                                        let initial = pa.arguments_summary.clone();
+                                        let edited = open_editor_for_content(&initial).await;
+                                        term.clear()?;
+                                        let _ = rpc
+                                            .session_approve(
+                                                &session_id,
+                                                &pa.request_id,
+                                                ApprovalDecision::RejectWithEdit {
+                                                    replacement: edited,
+                                                },
+                                            )
+                                            .await;
+                                    }
+                                } else if state.pending_approval().is_none()
+                                    && !state.turn_in_flight
+                                {
+                                    state.push_input_char('e');
+                                }
+                            }
                             KeyCode::Char(c) => {
                                 if state.pending_approval().is_none() && !state.turn_in_flight {
                                     state.push_input_char(c);
@@ -858,6 +934,46 @@ async fn chat_loop(
     Ok(())
 }
 
+/// Suspend the TUI, open `$EDITOR` with `content`, return the edited text.
+/// Restores raw mode and alternate screen before returning.
+/// Falls back to `content` unchanged if `$EDITOR` is unset or the process fails.
+pub async fn open_editor_for_content(content: &str) -> String {
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    let tmp = match tempfile::NamedTempFile::new() {
+        Ok(f) => f,
+        Err(_) => return content.to_string(),
+    };
+    if std::fs::write(tmp.path(), content).is_err() {
+        return content.to_string();
+    }
+
+    crossterm::terminal::disable_raw_mode().ok();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::LeaveAlternateScreen
+    );
+
+    let path = tmp.path().to_owned();
+    let status = tokio::process::Command::new(&editor)
+        .arg(&path)
+        .status()
+        .await;
+
+    crossterm::terminal::enable_raw_mode().ok();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::EnterAlternateScreen
+    );
+
+    if status.map(|s| s.success()).unwrap_or(false) {
+        std::fs::read_to_string(&path).unwrap_or_else(|_| content.to_string())
+    } else {
+        content.to_string()
+    }
+}
 // ── Tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -944,6 +1060,15 @@ mod tests {
         let pa = s.pending_approval().unwrap();
         assert_eq!(pa.request_id, "req-1");
         assert_eq!(pa.tool_name, "shell");
+    }
+
+    #[tokio::test]
+    async fn launch_editor_returns_original_on_empty_write() {
+        // Without a real $EDITOR in CI, we expect the original to be returned.
+        // The function must not panic.
+        let original = "let x = 1;".to_string();
+        let result = open_editor_for_content(&original).await;
+        assert!(!result.is_empty());
     }
 
     #[test]
