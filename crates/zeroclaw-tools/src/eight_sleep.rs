@@ -102,10 +102,10 @@ impl EightSleepTool {
     async fn authenticate(&self) -> anyhow::Result<String> {
         {
             let guard = self.token.read();
-            if let Some(ref t) = *guard {
-                if !t.is_expired() {
-                    return Ok(t.access_token.clone());
-                }
+            if let Some(ref t) = *guard
+                && !t.is_expired()
+            {
+                return Ok(t.access_token.clone());
             }
         }
 
@@ -131,13 +131,34 @@ impl EightSleepTool {
             anyhow::bail!("8Sleep login failed ({status}): {truncated}");
         }
 
-        let login: LoginResponse = resp.json().await?;
-        let session = login
-            .session
-            .ok_or_else(|| anyhow::anyhow!("8Sleep login returned no session"))?;
-        let access_token = session
-            .access_token
-            .ok_or_else(|| anyhow::anyhow!("8Sleep login returned no access token"))?;
+        let login: LoginResponse = resp.json().await.map_err(|e| {
+            ::zeroclaw_log::record!(
+                ERROR,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({"error": format!("{}", e)})),
+                "eight_sleep: failed to parse login response"
+            );
+            anyhow::Error::msg(format!("8Sleep login response parse error: {e}"))
+        })?;
+        let session = login.session.ok_or_else(|| {
+            ::zeroclaw_log::record!(
+                ERROR,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                "eight_sleep: login returned no session"
+            );
+            anyhow::Error::msg("8Sleep login returned no session")
+        })?;
+        let access_token = session.access_token.ok_or_else(|| {
+            ::zeroclaw_log::record!(
+                ERROR,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                "eight_sleep: login returned no access token"
+            );
+            anyhow::Error::msg("8Sleep login returned no access token")
+        })?;
 
         let expires_at = session.expiration_date.unwrap_or_else(|| {
             SystemTime::now()
@@ -166,10 +187,10 @@ impl EightSleepTool {
 
     /// Resolve the device ID — use configured value or auto-detect.
     async fn resolve_device_id(&self, token: &str) -> anyhow::Result<String> {
-        if let Some(ref id) = self.device_id {
-            if !id.trim().is_empty() {
-                return Ok(id.trim().to_string());
-            }
+        if let Some(ref id) = self.device_id
+            && !id.trim().is_empty()
+        {
+            return Ok(id.trim().to_string());
         }
 
         let url = format!("{}/users/me", self.api_base);
@@ -194,7 +215,15 @@ impl EightSleepTool {
             .as_array()
             .and_then(|arr| arr.first())
             .and_then(|d| d["id"].as_str())
-            .ok_or_else(|| anyhow::anyhow!("No 8Sleep devices found on account"))?
+            .ok_or_else(|| {
+                ::zeroclaw_log::record!(
+                    ERROR,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure),
+                    "eight_sleep: no devices found on account"
+                );
+                anyhow::Error::msg("No 8Sleep devices found on account")
+            })?
             .to_string();
 
         Ok(device_id)
@@ -734,7 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_get_bed_state() {
-        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
