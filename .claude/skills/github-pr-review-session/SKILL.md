@@ -161,7 +161,7 @@ the handoff.
    |---|---|
    | PR fits a milestone (any type) | Assign that milestone → go to step 5 |
    | No scope match + break-fix or docs | Assign the **earliest open milestone** by version order → go to step 5 |
-   | No scope match + feature | Ask the milestone owner: default @singlerider; use @JordanTheJet for hardware, edge-deployment, or project-lead scope → go to step 6 |
+   | No scope match + feature | Ask the milestone owners: default @singlerider and @theonlyhennygod; use @JordanTheJet for hardware, edge-deployment, or project-lead scope → go to step 6 |
 
    "Earliest open milestone" means the lowest semver among all currently open
    milestones (e.g. v0.7.6 before v0.7.7 before v0.8.0). Sort by the version
@@ -206,10 +206,11 @@ the handoff.
 
 6. **Milestone-owner fallback — feature with no scope match:**
 
-   Post a comment on the PR tagging @singlerider for milestone alignment:
+   Post a comment on the PR tagging @singlerider and @theonlyhennygod for
+   milestone alignment:
    ```bash
    gh pr comment <number> --repo zeroclaw-labs/zeroclaw \
-     --body "@singlerider — milestone alignment needed: this PR does not clearly fit within the scope boundary of any open milestone. Please advise on placement or deferral."
+     --body "@singlerider @theonlyhennygod — milestone alignment needed: this PR does not clearly fit within the scope boundary of any open milestone. Please advise on placement or deferral."
    ```
 
    Use @JordanTheJet instead when the unclear milestone placement is primarily
@@ -283,9 +284,9 @@ These norms are documented in
    Note the skip reason in the handoff when bypassing. Break-fix (`fix:`
    prefix or `bug` label) and docs (`docs:` prefix) PRs with no scope match
    are assigned the earliest open milestone by version order. For feature PRs
-   with no scope match, ask @singlerider for milestone placement by default;
-   use @JordanTheJet only when the unclear placement is primarily about
-   hardware, edge deployments, or project-lead scope.
+   with no scope match, ask @singlerider and @theonlyhennygod for milestone
+   placement by default; use @JordanTheJet only when the unclear placement is
+   primarily about hardware, edge deployments, or project-lead scope.
 8. **Always update `tmp/handoff.md` after posting.** The handoff is useless if
    it's not current. Include the milestone alignment outcome.
 9. **Never merge.** Never push to contributor branches.
