@@ -986,8 +986,8 @@ impl InputBarState {
             self.last_blink = now;
         }
 
-        // Cursor positioning.
-        if show_cursor && !turn_in_flight && inner_width > 0 {
+        // Cursor positioning — suppress when file explorer overlay is active.
+        if show_cursor && !turn_in_flight && inner_width > 0 && self.file_explorer.is_none() {
             let (cursor_row, cursor_col) = cursor_to_visual(&self.input, self.cursor, inner_width);
 
             // Auto-scroll to keep cursor visible.
