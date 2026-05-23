@@ -870,11 +870,24 @@ fn file_ext(input: &serde_json::Value) -> Option<&str> {
     std::path::Path::new(path).extension()?.to_str()
 }
 
-fn render_tool_entry(
-    lines: &mut Vec<Line<'static>>,
-    name: &str,
-    input: &serde_json::Value,
-    result: Option<&str>,
+/// Return a prefix of `s` no longer than `max_bytes`, guaranteed to end on a
+/// valid UTF-8 char boundary. Never panics on multi-byte characters.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn render_tool_entry<'a>(
+    lines: &mut Vec<Line<'a>>,
+    name: &'a str,
+    input: &'a serde_json::Value,
+    result: Option<&'a str>,
 ) {
     const TOOL_FG: Color = Color::Rgb(180, 140, 255);
     const RESULT_FG: Color = Color::Rgb(130, 130, 130);
@@ -911,7 +924,7 @@ fn render_tool_entry(
         _ => {
             let summary = serde_json::to_string(input).unwrap_or_default();
             let truncated = if summary.len() > 120 {
-                format!("{}…", &summary[..120])
+                format!("{}…", truncate_utf8(&summary, 120))
             } else {
                 summary
             };
@@ -924,7 +937,7 @@ fn render_tool_entry(
 
     if let Some(res) = result {
         let truncated = if res.len() > 200 {
-            format!("{}…", &res[..200])
+            format!("{}…", truncate_utf8(res, 200))
         } else {
             res.to_string()
         };
