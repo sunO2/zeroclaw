@@ -986,7 +986,7 @@ impl Agent {
             .response_cache(response_cache)
             .tool_dispatcher(tool_dispatcher)
             .memory_loader(Box::new(DefaultMemoryLoader::new(
-                5,
+                config.effective_memory_recall_limit(agent_alias),
                 config.memory.min_relevance_score,
             )))
             .prompt_builder(SystemPromptBuilder::with_defaults())

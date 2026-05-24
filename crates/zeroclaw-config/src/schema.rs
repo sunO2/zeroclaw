@@ -3127,6 +3127,17 @@ impl Config {
             .map_or(32_000, |a| a.max_context_tokens)
     }
 
+    /// Effective `memory_recall_limit`. Profile `Some` wins over global default.
+    /// Returns `usize::MAX` when the configured value is `0` (unlimited).
+    #[must_use]
+    pub fn effective_memory_recall_limit(&self, agent_alias: &str) -> usize {
+        let raw = self
+            .runtime_profile_for_agent(agent_alias)
+            .and_then(|p| p.memory_recall_limit)
+            .unwrap_or(5);
+        if raw == 0 { usize::MAX } else { raw }
+    }
+
     /// Effective `compact_context`. Profile `Some` wins over agent field.
     #[must_use]
     pub fn effective_compact_context(&self, agent_alias: &str) -> bool {
@@ -9174,6 +9185,9 @@ pub struct RuntimeProfileConfig {
     pub max_tool_result_chars: Option<usize>,
     /// Number of recent turns whose full tool context is preserved. `None` inherits.
     pub keep_tool_context_turns: Option<usize>,
+    /// Maximum memory entries injected per turn. `None` inherits global default (5).
+    /// Set to `0` for unlimited.
+    pub memory_recall_limit: Option<usize>,
 }
 
 impl Default for RuntimeProfileConfig {
@@ -9197,6 +9211,7 @@ impl Default for RuntimeProfileConfig {
             context_aware_tools: None,
             max_tool_result_chars: None,
             keep_tool_context_turns: None,
+            memory_recall_limit: None,
         }
     }
 }
