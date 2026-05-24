@@ -4879,6 +4879,19 @@ pub struct MultimodalConfig {
     /// Maximum image payload size in MiB before base64 encoding.
     #[serde(default = "default_multimodal_max_image_size_mb")]
     pub max_image_size_mb: usize,
+    /// Maximum age of images in conversation turns.
+    ///
+    /// When non-zero, images in user messages that are more than this many
+    /// turns back from the end of history are stripped before the request is
+    /// sent to the provider. This prevents a single screenshot from being
+    /// re-encoded and re-uploaded on every subsequent turn indefinitely.
+    /// Tool-result images are already managed by the stale-tool-result
+    /// mechanism and are not affected by this setting.
+    ///
+    /// `0` (the default) disables age-based trimming entirely — images are
+    /// only evicted by the `max_images` count cap.
+    #[serde(default)]
+    pub max_image_turns: usize,
     /// Allow fetching remote image URLs (http/https). Disabled by default.
     #[serde(default)]
     pub allow_remote_fetch: bool,
@@ -4915,6 +4928,7 @@ impl Default for MultimodalConfig {
         Self {
             max_images: default_multimodal_max_images(),
             max_image_size_mb: default_multimodal_max_image_size_mb(),
+            max_image_turns: 0,
             allow_remote_fetch: false,
             vision_model_provider: None,
             vision_model: None,
