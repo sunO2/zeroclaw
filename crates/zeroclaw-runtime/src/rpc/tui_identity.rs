@@ -25,6 +25,10 @@ pub struct TuiEntry {
     pub peer_label: String,
     /// Transport protocol: `"unix"` or `"wss"`.
     pub transport: String,
+    /// Full shell environment captured from the TUI process at connect time.
+    /// Used to pass the user's real env (PATH, SSH_AUTH_SOCK, etc.) through
+    /// to subprocesses spawned by the daemon on their behalf.
+    pub env: HashMap<String, String>,
 }
 
 // ── Registry ─────────────────────────────────────────────────────
@@ -255,5 +259,87 @@ mod tests {
         // generate_unique should return something different
         let id = registry.generate_unique_tui_id();
         assert_ne!(id, "tui_00000000");
+    }
+
+    // ── TUI env passthrough tests ─────────────────────────────────
+
+    #[test]
+    fn tui_entry_stores_env() {
+        let registry = TuiRegistry::new_unsigned();
+        let mut env = HashMap::new();
+        env.insert("MY_VAR".to_string(), "my_value".to_string());
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-secret".to_string());
+
+        registry.register(TuiEntry {
+            tui_id: "tui_aabbccdd".to_string(),
+            connected_at: Utc::now(),
+            peer_label: "test".to_string(),
+            transport: "unix".to_string(),
+            env,
+        });
+
+        let entries = registry.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].env.get("MY_VAR").map(|s| s.as_str()), Some("my_value"));
+        assert_eq!(
+            entries[0].env.get("ANTHROPIC_API_KEY").map(|s| s.as_str()),
+            Some("sk-secret"),
+            "full env should be stored without filtering"
+        );
+    }
+
+    #[test]
+    fn tui_entry_env_defaults_to_empty() {
+        // Entries with no env (e.g. old clients) should work fine
+        let registry = TuiRegistry::new_unsigned();
+        registry.register(TuiEntry {
+            tui_id: "tui_11223344".to_string(),
+            connected_at: Utc::now(),
+            peer_label: "test".to_string(),
+            transport: "unix".to_string(),
+            env: HashMap::new(),
+        });
+
+        let entries = registry.list();
+        assert!(entries[0].env.is_empty());
+    }
+
+    #[test]
+    fn tui_entry_env_dropped_on_unregister() {
+        let registry = TuiRegistry::new_unsigned();
+        let mut env = HashMap::new();
+        env.insert("SOME_VAR".to_string(), "some_value".to_string());
+
+        registry.register(TuiEntry {
+            tui_id: "tui_deadbeef".to_string(),
+            connected_at: Utc::now(),
+            peer_label: "test".to_string(),
+            transport: "unix".to_string(),
+            env,
+        });
+        assert_eq!(registry.list().len(), 1);
+
+        registry.unregister("tui_deadbeef");
+        assert!(registry.list().is_empty(), "env should be dropped with entry");
+    }
+
+    #[test]
+    fn tui_entry_env_survives_clone() {
+        // TuiEntry derives Clone — env must be included
+        let mut env = HashMap::new();
+        env.insert("CLONED_VAR".to_string(), "cloned_value".to_string());
+
+        let entry = TuiEntry {
+            tui_id: "tui_cafebabe".to_string(),
+            connected_at: Utc::now(),
+            peer_label: "test".to_string(),
+            transport: "unix".to_string(),
+            env,
+        };
+        let cloned = entry.clone();
+        assert_eq!(
+            cloned.env.get("CLONED_VAR").map(|s| s.as_str()),
+            Some("cloned_value")
+        );
     }
 }

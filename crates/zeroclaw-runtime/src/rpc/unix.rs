@@ -255,6 +255,7 @@ mod tests {
             protocol_version: 1,
             tui_id: None,
             tui_sig: None,
+            env: Default::default(),
         };
         writer
             .write_all(rpc_request(Method::Initialize, &params, 1).as_bytes())
@@ -300,6 +301,7 @@ mod tests {
             protocol_version: 1,
             tui_id: None,
             tui_sig: None,
+            env: Default::default(),
         };
         writer
             .write_all(rpc_request(Method::Initialize, &init_params, 1).as_bytes())

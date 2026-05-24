@@ -3023,6 +3023,7 @@ pub async fn run(
             &config,
             None,
             is_subagent_caller,
+            None,
         );
 
         let peripheral_tools: Vec<Box<dyn Tool>> = if let Some(f) = PERIPHERAL_TOOLS_FN.get() {
@@ -4337,6 +4338,7 @@ pub async fn process_message(
             &config,
             None,
             false,
+            None,
         );
         let peripheral_tools: Vec<Box<dyn Tool>> = if let Some(f) = PERIPHERAL_TOOLS_FN.get() {
             f(config.peripherals.clone()).await.unwrap_or_default()

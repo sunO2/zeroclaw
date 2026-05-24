@@ -665,6 +665,7 @@ pub async fn run_gateway(
                 &config,
                 Some(canvas_store.clone()),
                 false,
+                None,
             );
             (tools_registry_raw, delegate_handle_gw)
         }

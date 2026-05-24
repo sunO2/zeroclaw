@@ -62,6 +62,11 @@ rpc_type! {
         /// HMAC signature proving ownership of the claimed TUI ID.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tui_sig: Option<String>,
+        /// Shell environment from the TUI process, used to forward the user's
+        /// real env (PATH, credentials, etc.) to subprocesses spawned by the
+        /// daemon on their behalf. Omitted by older clients; defaults to empty.
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        pub env: std::collections::HashMap<String, String>,
     }
 }
 

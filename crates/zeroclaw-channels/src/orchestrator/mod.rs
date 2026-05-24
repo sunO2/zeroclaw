@@ -6919,6 +6919,7 @@ pub async fn start_channels(
             &config,
             canvas_store.clone(),
             false,
+            None,
         );
 
         // Wire MCP tools into the per-agent registry before freezing —

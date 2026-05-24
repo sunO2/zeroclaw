@@ -3,7 +3,7 @@ use crate::security::SecurityPolicy;
 use crate::security::traits::Sandbox;
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use zeroclaw_api::tool::{Tool, ToolResult};
@@ -47,6 +47,11 @@ pub struct ShellTool {
     runtime: Arc<dyn RuntimeAdapter>,
     sandbox: Arc<dyn Sandbox>,
     timeout_secs: u64,
+    /// Environment forwarded from the connected TUI client. When set, these
+    /// vars are overlaid on top of the safe-env snapshot, letting the user's
+    /// real shell environment (PATH, credentials, etc.) reach subprocesses
+    /// even though the daemon itself may have a stripped-down env.
+    tui_env: Option<HashMap<String, String>>,
 }
 
 impl ShellTool {
@@ -56,6 +61,7 @@ impl ShellTool {
             runtime,
             sandbox: Arc::new(crate::security::NoopSandbox),
             timeout_secs: DEFAULT_SHELL_TIMEOUT_SECS,
+            tui_env: None,
         }
     }
 
@@ -69,12 +75,22 @@ impl ShellTool {
             runtime,
             sandbox,
             timeout_secs: DEFAULT_SHELL_TIMEOUT_SECS,
+            tui_env: None,
         }
     }
 
     /// Override the command execution timeout (in seconds).
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
+        self
+    }
+
+    /// Overlay the TUI client's environment on top of the safe-env snapshot.
+    ///
+    /// Pass `Some(env)` to enable forwarding; `None` is a no-op (same as not
+    /// calling this method at all).
+    pub fn with_tui_env(mut self, env: Option<HashMap<String, String>>) -> Self {
+        self.tui_env = env;
         self
     }
 }
@@ -256,6 +272,15 @@ impl Tool for ShellTool {
         for var in collect_allowed_shell_env_vars(&self.security) {
             if let Ok(val) = std::env::var(&var) {
                 cmd.env(&var, val);
+            }
+        }
+
+        // Overlay TUI env on top of the safe-env snapshot. TUI vars win on
+        // conflict — the user's real PATH etc. should take precedence over
+        // whatever the daemon process inherited.
+        if let Some(ref tui_env) = self.tui_env {
+            for (k, v) in tui_env {
+                cmd.env(k, v);
             }
         }
 
@@ -931,5 +956,123 @@ mod tests {
             .expect("command with sandbox should succeed");
         assert!(result.success);
         assert!(result.output.contains("sandbox_test"));
+    }
+
+    // ── TUI env overlay tests ─────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_tui_env_is_passed_to_subprocess() {
+        // A var that is NOT in SAFE_ENV_VARS and NOT in passthrough —
+        // it should only appear if tui_env injects it.
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime())
+            .with_tui_env(Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert("ZC_TUI_TEST_VAR".to_string(), "tui_injected".to_string());
+                m
+            }));
+
+        let result = tool
+            .execute(json!({"command": "env"}))
+            .await
+            .expect("env command should succeed");
+
+        assert!(result.success);
+        assert!(
+            result.output.contains("ZC_TUI_TEST_VAR=tui_injected"),
+            "tui_env var should appear in subprocess env, got:\n{}",
+            result.output
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_without_tui_env_does_not_inject_extra_vars() {
+        // Without tui_env, a non-safe var must NOT appear.
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime());
+
+        let result = tool
+            .execute(json!({"command": "env"}))
+            .await
+            .expect("env command should succeed");
+
+        assert!(result.success);
+        assert!(
+            !result.output.contains("ZC_TUI_TEST_VAR"),
+            "non-safe var must not leak without tui_env"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_tui_env_overrides_safe_var() {
+        // tui_env wins over the process-level value for a var that is also in SAFE_ENV_VARS.
+        // This lets the TUI's PATH (e.g. with nix/brew) win over the daemon's PATH.
+        let _guard = EnvGuard::set("HOME", "/daemon-home");
+
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime())
+            .with_tui_env(Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert("HOME".to_string(), "/tui-home".to_string());
+                m
+            }));
+
+        let result = tool
+            .execute(json!({"command": "echo $HOME"}))
+            .await
+            .expect("echo $HOME should succeed");
+
+        assert!(result.success);
+        assert!(
+            result.output.trim() == "/tui-home",
+            "tui_env HOME should override daemon HOME, got: {:?}",
+            result.output.trim()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_tui_env_none_behaves_like_existing() {
+        // with_tui_env(None) must be identical to no tui_env at all —
+        // only SAFE_ENV_VARS + passthrough reach the subprocess.
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime())
+            .with_tui_env(None);
+
+        let result = tool
+            .execute(json!({"command": "env"}))
+            .await
+            .expect("env command should succeed");
+
+        assert!(result.success);
+        assert!(
+            !result.output.contains("ZC_TUI_TEST_VAR"),
+            "None tui_env must not inject anything extra"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_tui_env_secrets_reach_subprocess_but_not_safe_list() {
+        // The whole point: secrets from the TUI env (e.g. SSH_AUTH_SOCK)
+        // DO reach the subprocess via tui_env even though they are not
+        // in SAFE_ENV_VARS.
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime())
+            .with_tui_env(Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert("SSH_AUTH_SOCK".to_string(), "/tmp/fake.sock".to_string());
+                m
+            }));
+
+        // Confirm SSH_AUTH_SOCK is not in the safe list (would be a bug if it were)
+        assert!(
+            !SAFE_ENV_VARS.contains(&"SSH_AUTH_SOCK"),
+            "SSH_AUTH_SOCK must not be in SAFE_ENV_VARS"
+        );
+
+        let result = tool
+            .execute(json!({"command": "env"}))
+            .await
+            .expect("env command should succeed");
+
+        assert!(result.success);
+        assert!(
+            result.output.contains("SSH_AUTH_SOCK=/tmp/fake.sock"),
+            "SSH_AUTH_SOCK from tui_env must reach subprocess"
+        );
     }
 }

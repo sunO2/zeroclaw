@@ -504,6 +504,7 @@ impl RpcDispatcher {
                     .map_or("unknown", |(proto, _)| proto)
                     .to_string(),
                 peer_label: self.peer_label.clone(),
+                env: req.env,
             });
         self.tui_id = Some(tui_id.clone());
 
