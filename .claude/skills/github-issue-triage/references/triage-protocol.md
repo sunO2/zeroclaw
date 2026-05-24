@@ -130,14 +130,15 @@ Process two groups:
    - Security issue (vulnerability — redirect immediately, see §2a)
    - Spam or noise — flag to user, do not close autonomously
 
-2. **Apply labels** — apply the appropriate primary label (`bug`, `feature`, `r:support`) plus any module/channel/provider labels derivable from the title or body (e.g., `channel:telegram`, `provider:ollama`). Apply risk tier if determinable.
+2. **Apply labels** — apply the appropriate primary label (`bug`, `feature`, `r:support`) plus any module/channel/provider labels derivable from the title or body (e.g., `channel:telegram`, `provider:ollama`). Apply issue risk tier if determinable. Issue risk is the likely fix blast radius from the report, not a prediction that the eventual PR will carry the same risk label.
 
 3. **Link open PRs** — search for open PRs that reference this issue number or describe the same fix. If found, apply `status:in-progress` and comment linking the PR so the reporter knows work is in progress. Do not add `status:no-stale` only because a PR exists; the stale pass excludes issues with open linked PRs.
 
 4. **Evaluate for community labels** — after classifying and labeling, ask:
-   - Is this a bug or feature that is well-scoped, clearly documented, and accessible to a new contributor? → apply `good first issue`
-   - Is this something maintainers actively want external help on but haven't prioritized internally? → apply `help wanted`
+   - Is this a bug or feature that is XS/S, self-contained, clearly documented, linked to the relevant code or docs, and has a named mentor or contact? → apply `good first issue`
+   - Is this actionable, unblocked, and something maintainers actively want external help on and can review? → apply `help wanted`
    Do not apply these speculatively — only when the issue genuinely fits.
+   Do not apply `help wanted` to issues that are merely valid, accepted, or unowned. Skip pickup labels when the issue is blocked, missing acceptance criteria, or waiting on a policy decision. For likely high-risk work, apply `help wanted` only when a maintainer explicitly asks for outside help on that exact scope.
 
 5. **Assess repro quality (bug reports only)** — check for:
    - Concrete steps to reproduce
@@ -408,6 +409,14 @@ Derived from RFC #5577 and current maintainer label policy. Apply these consiste
 - `priority:medium` — notable but has workaround
 - `priority:low` — minor issue or edge case
 
+### Risk (apply when determinable)
+
+- `risk: low` — likely docs, tests, or isolated low-blast-radius fix
+- `risk: medium` — likely behavioral code change without boundary or security impact
+- `risk: high` — likely security, runtime, gateway, tool-execution, workflow, or other high-blast-radius change
+
+For issues, risk labels estimate likely fix blast radius from the report. Reassess the label when an actual PR exists; PR risk is based on the diff under review.
+
 ### Status
 
 - `status:stale` — original author has not engaged for 45+ days; pending closure
@@ -428,8 +437,8 @@ Derived from RFC #5577 and current maintainer label policy. Apply these consiste
 
 ### Community
 
-- `good first issue` — well-scoped, documented, beginner-accessible
-- `help wanted` — maintainers welcome external contribution
+- `good first issue` — XS/S, self-contained, documented, linked, and mentored beginner-accessible work
+- `help wanted` — actionable, unblocked external contribution wanted; not a generic valid/unowned marker
 
 ---
 

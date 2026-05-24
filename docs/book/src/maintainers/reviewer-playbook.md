@@ -78,6 +78,8 @@ Vague comments create avoidable round trips. If you find yourself writing "this 
 
 The same risk-routing principle applies to issues, but the labels and signals are different.
 
+Issue `risk:*` labels describe likely fix blast radius from the report. PR `risk:*` labels describe the actual diff under review. Reassess risk when an issue becomes a PR instead of carrying the issue label forward automatically.
+
 ### Triage labels
 
 | Label | When to use |
@@ -89,6 +91,8 @@ The same risk-routing principle applies to issues, but the labels and signals ar
 | `status:blocked` | Valid work is waiting on an external dependency, maintainer decision, or linked prerequisite. Record the blocker; this is stale protection only while that blocker remains unresolved. |
 | `status:in-progress` | An open PR is actively targeting the issue. Re-check live PR state before relying on it during stale passes. |
 | `status:no-stale` | Accepted or otherwise long-lived work should stay open and is not already protected by another stale exclusion. Record the reason in a maintainer comment, issue body, or tracker entry. |
+| `good first issue` | XS/S, self-contained, documented work with clear acceptance criteria, relevant code or docs links, a named mentor or contact, and low onboarding risk. |
+| `help wanted` | Actionable, unblocked work maintainers want external help on and can review. Do not use it as a generic valid/unowned marker. |
 
 If logs or payloads in the report contain personal identifiers or sensitive data, request redaction before deeper triage. The triage process must not propagate the exposure.
 

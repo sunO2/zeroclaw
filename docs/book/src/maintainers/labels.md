@@ -132,7 +132,7 @@ Based on effective changed line count, normalized for docs-only and lockfile-hea
 
 ## Risk labels
 
-Heuristic combining touched paths and change size. Currently applied **manually**.
+For PRs, risk labels describe the actual diff under review: touched paths, behavior change, security boundary exposure, and rollback difficulty. For issues, risk labels describe the likely fix blast radius based on the report, help triage reviewer depth and contributor fit, and may change once a concrete PR shows the actual implementation path. Currently applied **manually**.
 
 | Label | Meaning |
 |---|---|
@@ -179,6 +179,17 @@ Applied manually — the auto-response automation that used to handle these was 
 | `duplicate` | Duplicate of an existing issue |
 | `stale-candidate` | Dormant PR or issue; candidate for closing |
 | `superseded` | Replaced by a newer PR |
+
+## Community pickup labels
+
+Applied manually when maintainers want outside contribution.
+
+| Label | Purpose |
+|---|---|
+| `good first issue` | Small, self-contained, well-documented XS/S work that is safe for a new contributor and has acceptance criteria, relevant code or docs links, and a named mentor or contact |
+| `help wanted` | Actionable, unblocked work that maintainers want external help on and can review, usually low or medium likely issue risk |
+
+Do not use `help wanted` as a generic marker for "valid but unstaffed." If an issue is blocked, architecture-dependent, missing acceptance criteria, likely high-risk, or waiting on a policy decision, leave it without pickup labels until the blocker is resolved or a maintainer writes the missing scope.
 
 ## Maintenance triggers
 
