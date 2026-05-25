@@ -2,7 +2,13 @@ name: Cross-Platform Build
 
 on:
   workflow_dispatch:
-
+   inputs:
+      feature:
+        description: '添加构建参数 feature 配置'
+        required: false
+        default: ''
+        type: string
+        
 permissions:
   contents: read
 
@@ -95,4 +101,9 @@ jobs:
           if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
             export "${{ matrix.linker_env }}=${{ matrix.linker }}"
           fi
-          cargo build --release --locked --features channel-matrix,channel-lark,channel-wechat --target ${{ matrix.target }}
+          FEATURES="channel-matrix,channel-lark,channel-wechat"
+          if [ -n "${{ github.event.inputs.feature || '' }}" ]; then
+            FEATURES="${FEATURES},${{ github.event.inputs.feature }}"
+          fi
+          
+          cargo build --release --locked --features "$FEATURES" --target ${{ matrix.target }}
