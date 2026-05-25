@@ -3,6 +3,18 @@ name: Cross-Platform Build
 on:
   workflow_dispatch:
    inputs:
+      platforms:
+        description: 'Select platforms to build'
+        required: true
+        default: 'linux-x86_64'
+        type: choice
+        options:
+          - linux-x86_64
+          - linux-aarch64
+          - linux-armv7
+          - macos-x86_64
+          - windows-x86_64
+          - all
       feature:
         description: '添加构建参数 feature 配置'
         required: false
@@ -75,6 +87,7 @@ jobs:
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+        if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == matrix.platform
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
