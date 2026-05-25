@@ -52,6 +52,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            # Native Linux smoke-check build intentionally uses default linker.
+            # CI gate (`ci.yml`) uses clang+mold for throughput optimization.
+          - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             cross_compiler: gcc-aarch64-linux-gnu
             linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER
@@ -91,4 +95,4 @@ jobs:
           if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
             export "${{ matrix.linker_env }}=${{ matrix.linker }}"
           fi
-          cargo build --release --locked --features channel-matrix,channel-lark --target ${{ matrix.target }}
+          cargo build --release --locked --features channel-matrix,channel-lark,channel-wechat --target ${{ matrix.target }}
