@@ -71,6 +71,7 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
             # Native Linux smoke-check build intentionally uses default linker.
             # CI gate (`ci.yml`) uses clang+mold for throughput optimization.
           - os: ubuntu-latest
@@ -78,16 +79,19 @@ jobs:
             cross_compiler: gcc-aarch64-linux-gnu
             linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER
             linker: aarch64-linux-gnu-gcc
+            platform: linux-aarch64
           - os: ubuntu-latest
             target: armv7-unknown-linux-gnueabihf
             cross_compiler: gcc-arm-linux-gnueabihf
             linker_env: CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER
             linker: arm-linux-gnueabihf-gcc
+            platform: linux-armv7
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            platform: macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-        if: github.event.inputs.platforms == 'all' || github.event.inputs.platforms == matrix.platform
+            platform: windows-x86_64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
