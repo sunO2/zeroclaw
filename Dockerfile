@@ -145,7 +145,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /zeroclaw-data /zeroclaw-data
 COPY --from=builder /app/zeroclaw /usr/local/bin/zeroclaw
-COPY --from=web-builder /web/dist /zeroclaw-data/web/dist
+COPY --from=web-builder /app/web/dist /zeroclaw-data/web/dist
 
 # Overwrite minimal config with DEV template (Ollama defaults)
 COPY dev/config.template.toml /zeroclaw-data/.zeroclaw/config.toml
