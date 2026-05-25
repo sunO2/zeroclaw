@@ -178,7 +178,7 @@ FROM gcr.io/distroless/cc-debian13:nonroot@sha256:84fcd3c223b144b0cb6edc5ecc7564
 
 COPY --from=builder /app/zeroclaw /usr/local/bin/zeroclaw
 COPY --from=builder /zeroclaw-data /zeroclaw-data
-COPY --from=web-builder /web/dist /zeroclaw-data/web/dist
+COPY --from=web-builder /app/web/dist /zeroclaw-data/web/dist
 
 # Environment setup
 # Ensure UTF-8 locale so CJK / multibyte input is handled correctly
